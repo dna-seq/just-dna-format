@@ -2,7 +2,7 @@
 
 import pytest
 
-from just_dna_module.identity import (
+from just_dna_format.identity import (
     Version,
     canonical_id,
     is_valid_name,

@@ -16,7 +16,7 @@ from typing import Optional
 
 from pydantic import BaseModel, Field, field_validator
 
-from just_dna_module.identity import (
+from just_dna_format.identity import (
     is_valid_version,
     validate_name,
     validate_namespace,
@@ -35,7 +35,7 @@ COLOR_PATTERN: re.Pattern[str] = re.compile(r"^#[0-9a-fA-F]{6}$")
 class Identity(BaseModel):
     """Module identity. `namespace`/`version`/`canonical_id` are filled by the marketplace.
 
-    Identity rules are validated here using the shared `just_dna_module.identity` helpers, so
+    Identity rules are validated here using the shared `just_dna_format.identity` helpers, so
     the contract enforces exactly what just-dna-pipelines enforces on `module_spec.yaml`.
     """
 
@@ -65,7 +65,8 @@ class Identity(BaseModel):
 
 
 class Display(BaseModel):
-    """Display metadata, mapped 1:1 from module_spec.yaml's ModuleInfo."""
+    """Shared display metadata for a module. The authoring DSL's `spec.ModuleInfo` extends this
+    (adding `name`), so the fields and their validation are defined here once."""
 
     title: str
     description: str
@@ -145,6 +146,17 @@ class ModuleManifest(BaseModel):
     compilation: Compilation = Field(default_factory=Compilation)
     inputs: list[FileEntry] = Field(default_factory=list)
     artifact: Artifact
+    logs: list[FileEntry] = Field(
+        default_factory=list,
+        description=(
+            "Optional per-version run/provenance log files, hashed like inputs. Each `name` is a "
+            "path relative to the module dir, so both a top-level aggregate log (e.g. `run.log`) "
+            "and per-role files under a `logs/` folder (e.g. `logs/researcher.log`, "
+            "`logs/reviewer.log`) are supported. Absent logs do NOT invalidate a module. Kept out "
+            "of `artifact.digest` so identical compiled data stays dedup-equal regardless of logs; "
+            "full cross-version provenance is the union of every version's logs."
+        ),
+    )
 
 
 def read_manifest(path: Path) -> ModuleManifest:

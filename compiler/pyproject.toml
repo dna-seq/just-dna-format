@@ -1,0 +1,26 @@
+[project]
+name = "just-dna-compiler"
+version = "0.1.0"
+description = "Reference compiler for just-dna annotation modules: spec directory → parquet artifact + manifest"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "just-dna-format",
+    "polars>=1.42.0",
+    "duckdb>=1.1.0",
+    "pyyaml>=6.0.2",
+    "platformdirs>=4.0.0",
+    "python-dotenv>=1.0.1",
+]
+
+[build-system]
+requires = ["uv-build"]
+build-backend = "uv_build"
+
+[tool.uv.sources]
+just-dna-format = { workspace = true }
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.3",
+]

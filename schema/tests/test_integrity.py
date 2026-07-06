@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from just_dna_module.integrity import (
+from just_dna_format.integrity import (
     IntegrityError,
     artifact_digest,
     build_artifact,
@@ -14,7 +14,7 @@ from just_dna_module.integrity import (
     sha256_file,
     verify_manifest,
 )
-from just_dna_module.manifest import (
+from just_dna_format.manifest import (
     MARKETPLACE_COMPILED_BY,
     Artifact,
     Compilation,

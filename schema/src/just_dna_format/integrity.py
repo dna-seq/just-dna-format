@@ -13,7 +13,7 @@ import hashlib
 import json
 from pathlib import Path
 
-from just_dna_module.manifest import (
+from just_dna_format.manifest import (
     MARKETPLACE_COMPILED_BY,
     Artifact,
     FileEntry,
@@ -81,6 +81,7 @@ def verify_manifest(
     *,
     require_marketplace: bool = True,
     check_inputs: bool = False,
+    check_logs: bool = False,
 ) -> None:
     """
     Verify a downloaded module against its manifest (SPEC §5 verify-then-install).
@@ -91,6 +92,8 @@ def verify_manifest(
       3. `compile_success` is true and `compiled_by == "marketplace-server"`
          (when `require_marketplace`).
       4. Optionally (`check_inputs`) every `inputs[]` file on disk matches its declared hash.
+      5. Optionally (`check_logs`) every `logs[]` file *present* on disk matches its declared hash;
+         absent logs are skipped, since logs are optional and need not be downloaded.
 
     Raises `IntegrityError` on the first failure; returns `None` on success.
     """
@@ -132,5 +135,17 @@ def verify_manifest(
             if actual != entry.sha256:
                 raise IntegrityError(
                     f"input hash mismatch for {entry.name}: "
+                    f"declared {entry.sha256}, computed {actual}"
+                )
+
+    if check_logs:
+        for entry in manifest.logs:
+            path = module_dir / entry.name
+            if not path.is_file():
+                continue  # logs are optional — an absent one is not a failure
+            actual = sha256_file(path)
+            if actual != entry.sha256:
+                raise IntegrityError(
+                    f"log hash mismatch for {entry.name}: "
                     f"declared {entry.sha256}, computed {actual}"
                 )

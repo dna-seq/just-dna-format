@@ -5,8 +5,8 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from just_dna_module.integrity import build_artifact
-from just_dna_module.manifest import (
+from just_dna_format.integrity import build_artifact
+from just_dna_format.manifest import (
     Compilation,
     Display,
     Identity,

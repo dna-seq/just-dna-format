@@ -1,0 +1,676 @@
+"""
+Module spec compiler: validates a spec directory and compiles it to the three-parquet artifact
+(weights, annotations, studies) plus a `manifest.json`.
+
+Public API:
+    validate_spec(spec_dir) -> ValidationResult
+    compile_module(spec_dir, output_dir, ...) -> CompilationResult   (emits manifest.json)
+    reverse_module(parquet_dir, output_dir, ...) -> Path
+
+The DSL/manifest schema comes from `just-dna-format`; this package is the transform between them.
+"""
+
+import csv
+import shutil
+from datetime import datetime, timezone
+from importlib.metadata import PackageNotFoundError, version
+from pathlib import Path
+from typing import Any, Optional
+
+import polars as pl
+import yaml
+from just_dna_format.integrity import build_artifact, file_entries
+from just_dna_format.manifest import (
+    Compilation,
+    Display,
+    FileEntry,
+    Identity,
+    ModuleManifest,
+    Stats,
+    write_manifest,
+)
+from just_dna_format.spec import ModuleSpecConfig, StudyRow, VariantRow
+from pydantic import ValidationError
+
+from just_dna_compiler.models import CompilationResult, ValidationResult
+
+_INPUT_FILES: tuple[str, ...] = ("module_spec.yaml", "variants.csv", "studies.csv")
+_OUTPUT_FILES: tuple[str, ...] = ("weights.parquet", "annotations.parquet", "studies.parquet")
+
+
+def _compiler_version() -> str:
+    try:
+        return f"just-dna-compiler {version('just-dna-compiler')}"
+    except PackageNotFoundError:
+        return "just-dna-compiler unknown"
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _collect_logs(
+    spec_dir: Path, output_dir: Path, explicit: Optional[list[Path]]
+) -> list[FileEntry]:
+    """Gather optional run/provenance logs into the module dir and hash them.
+
+    Auto-discovers a top-level aggregate log (`*.log` in `spec_dir`) plus per-role files under a
+    `spec_dir/logs/` folder, preserving each file's path relative to the module. An explicit
+    `log_files` list overrides discovery. Files are copied into `output_dir` (so they ship with the
+    module) and returned as hashed `FileEntry` rows. No logs → empty list (a valid module).
+    """
+    pairs: list[tuple[str, Path]] = []  # (relative name in module dir, source file)
+    if explicit is not None:
+        for path in map(Path, explicit):
+            try:
+                rel = path.relative_to(spec_dir).as_posix()
+            except ValueError:
+                rel = path.name
+            pairs.append((rel, path))
+    else:
+        for path in sorted(spec_dir.glob("*.log")):
+            pairs.append((path.name, path))
+        logs_dir = spec_dir / "logs"
+        if logs_dir.is_dir():
+            for path in sorted(logs_dir.rglob("*.log")):
+                pairs.append((path.relative_to(spec_dir).as_posix(), path))
+
+    seen: set[str] = set()
+    names: list[str] = []
+    for rel, src in pairs:
+        if rel in seen or not src.is_file():
+            continue
+        seen.add(rel)
+        dest = output_dir / rel
+        if dest.resolve() != src.resolve():
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(src, dest)
+        names.append(rel)
+    return file_entries(output_dir, names)
+
+
+# ── File loading helpers ───────────────────────────────────────────────────────
+
+
+def _load_yaml(path: Path) -> tuple[Optional[ModuleSpecConfig], list[str]]:
+    """Load and validate module_spec.yaml. Returns (config, errors)."""
+    if not path.exists():
+        return None, [f"module_spec.yaml not found at {path}"]
+    raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+    if raw is None:
+        return None, ["module_spec.yaml is empty"]
+    try:
+        return ModuleSpecConfig.model_validate(raw), []
+    except ValidationError as exc:
+        errors = []
+        for err in exc.errors():
+            loc = " → ".join(str(x) for x in err["loc"])
+            errors.append(f"module_spec.yaml [{loc}]: {err['msg']}")
+        return None, errors
+
+
+def _load_csv_rows(
+    path: Path, row_model: type, file_label: str
+) -> tuple[list[Any], list[str], list[str]]:
+    """Load a CSV and validate each row against a Pydantic model. Returns (rows, errors, warnings)."""
+    errors: list[str] = []
+    rows: list[Any] = []
+    if not path.exists():
+        return [], [f"{file_label} not found at {path}"], []
+
+    with open(path, encoding="utf-8", newline="") as f:
+        reader = csv.DictReader(f)
+        if reader.fieldnames is None:
+            return [], [f"{file_label} has no header row"], []
+        for line_num, raw_row in enumerate(reader, start=2):
+            cleaned = {
+                k.strip(): (v.strip() if isinstance(v, str) and v.strip() != "" else None)
+                for k, v in raw_row.items()
+                if k is not None
+            }
+            try:
+                rows.append(row_model.model_validate(cleaned))
+            except ValidationError as exc:
+                for err in exc.errors():
+                    loc = " → ".join(str(x) for x in err["loc"])
+                    errors.append(f"{file_label} line {line_num} [{loc}]: {err['msg']}")
+    return rows, errors, []
+
+
+# ── Cross-row validation ───────────────────────────────────────────────────────
+
+
+def _cross_validate_variants(variants: list[VariantRow]) -> tuple[list[str], list[str]]:
+    """Validate consistency across variant rows. Returns (errors, warnings)."""
+    errors: list[str] = []
+    warnings: list[str] = []
+
+    key_positions: dict[str, tuple[Optional[str], Optional[int]]] = {}
+    for row in variants:
+        key = row.variant_key
+        pos = (row.chrom, row.start)
+        if key in key_positions:
+            if key_positions[key] != pos:
+                errors.append(f"Inconsistent positions for {key}: {key_positions[key]} vs {pos}")
+        else:
+            key_positions[key] = pos
+
+    seen_keys: set[tuple[str, str]] = set()
+    for row in variants:
+        key = (row.variant_key, row.genotype)
+        if key in seen_keys:
+            errors.append(f"Duplicate (variant, genotype): ({row.variant_key}, {row.genotype})")
+        seen_keys.add(key)
+
+    for row in variants:
+        if row.weight is None:
+            continue
+        if row.state == "risk" and row.weight > 0:
+            warnings.append(
+                f"{row.variant_key} genotype {row.genotype}: state='risk' but weight={row.weight} > 0"
+            )
+        if row.state == "protective" and row.weight < 0:
+            warnings.append(
+                f"{row.variant_key} genotype {row.genotype}: state='protective' but weight={row.weight} < 0"
+            )
+    return errors, warnings
+
+
+def _cross_validate_studies(
+    studies: list[StudyRow], variant_keys: set[str]
+) -> tuple[list[str], list[str]]:
+    """Validate study rows against variant keys. Returns (errors, warnings)."""
+    warnings: list[str] = []
+    orphan_keys = {row.variant_key for row in studies} - variant_keys
+    if orphan_keys:
+        warnings.append(f"Studies reference variants not in variants.csv: {sorted(orphan_keys)}")
+    seen: set[tuple[str, str]] = set()
+    for row in studies:
+        key = (row.variant_key, row.pmid)
+        if key in seen:
+            warnings.append(f"Duplicate (variant, pmid): ({row.variant_key}, {row.pmid})")
+        seen.add(key)
+    return [], warnings
+
+
+# ── Public API ─────────────────────────────────────────────────────────────────
+
+
+def validate_spec(spec_dir: Path) -> ValidationResult:
+    """Validate a module spec directory without producing output.
+
+    Stats include `genes`/`categories` as lists (filtering None) plus `variant_count`,
+    `gene_count`, and `study_count` — the fields the manifest needs.
+    """
+    spec_dir = Path(spec_dir)
+    all_errors: list[str] = []
+    all_warnings: list[str] = []
+
+    if not spec_dir.is_dir():
+        return ValidationResult(valid=False, errors=[f"Spec directory does not exist: {spec_dir}"])
+
+    config, yaml_errors = _load_yaml(spec_dir / "module_spec.yaml")
+    all_errors.extend(yaml_errors)
+
+    variants, var_errors, var_warnings = _load_csv_rows(
+        spec_dir / "variants.csv", VariantRow, "variants.csv"
+    )
+    all_errors.extend(var_errors)
+    all_warnings.extend(var_warnings)
+
+    studies_path = spec_dir / "studies.csv"
+    studies: list[StudyRow] = []
+    if studies_path.exists():
+        studies, study_errors, study_warnings = _load_csv_rows(
+            studies_path, StudyRow, "studies.csv"
+        )
+        all_errors.extend(study_errors)
+        all_warnings.extend(study_warnings)
+        if not studies and not study_errors:
+            all_errors.append(
+                "studies.csv is present but has no study rows. Grounding evidence is mandatory."
+            )
+    else:
+        all_errors.append(
+            "studies.csv is missing. Grounding evidence is mandatory; add study rows with PMIDs."
+        )
+
+    if variants:
+        cross_errors, cross_warnings = _cross_validate_variants(variants)
+        all_errors.extend(cross_errors)
+        all_warnings.extend(cross_warnings)
+        variant_keys = {v.variant_key for v in variants}
+        if studies:
+            _, study_warnings = _cross_validate_studies(studies, variant_keys)
+            all_warnings.extend(study_warnings)
+
+    stats: dict[str, Any] = {}
+    if variants:
+        variant_keys_set = {v.variant_key for v in variants}
+        genes = sorted({v.gene for v in variants if v.gene})
+        categories = sorted({v.category for v in variants if v.category})
+        stats = {
+            "variant_count": len(variant_keys_set),
+            "unique_rsids": len({v.rsid for v in variants if v.rsid is not None}),
+            "gene_count": len(genes),
+            "genes": genes,
+            "categories": categories,
+            "study_count": len(studies),
+        }
+        if config:
+            stats["module_name"] = config.module.name
+
+    return ValidationResult(
+        valid=len(all_errors) == 0, errors=all_errors, warnings=all_warnings, stats=stats
+    )
+
+
+def compile_module(
+    spec_dir: Path,
+    output_dir: Path,
+    compression: str = "zstd",
+    resolve_with_ensembl: bool = True,
+    ensembl_cache: Optional[Path] = None,
+    compiled_by: Optional[str] = None,
+    ensembl_reference: Optional[str] = None,
+    log_files: Optional[list[Path]] = None,
+) -> CompilationResult:
+    """Compile a module spec directory into parquet files plus a `manifest.json`.
+
+    Args:
+        spec_dir: Path to the module spec directory.
+        output_dir: Directory for output parquet files + manifest.json.
+        compression: Parquet compression codec.
+        resolve_with_ensembl: Resolve missing rsid/position via an injected Ensembl DuckDB.
+        ensembl_cache: Path to a prebuilt Ensembl DuckDB or a parquet cache dir (required to
+            resolve; the standalone compiler does not download it — the caller injects it).
+        compiled_by: Provenance tag for the manifest (the marketplace passes "marketplace-server";
+            a local compile leaves it None, so downloaders treat it as untrusted).
+        ensembl_reference: Pinned reference id recorded in the manifest for reproducibility.
+        log_files: Explicit run/provenance log files to record. If None, auto-discovers a top-level
+            `*.log` plus per-role files under `spec_dir/logs/`. Logs are optional.
+    """
+    spec_dir = Path(spec_dir)
+    output_dir = Path(output_dir)
+
+    validation = validate_spec(spec_dir)
+    if not validation.valid:
+        return CompilationResult(
+            success=False, errors=validation.errors, warnings=validation.warnings
+        )
+
+    config, _ = _load_yaml(spec_dir / "module_spec.yaml")
+    assert config is not None
+    variants, _, _ = _load_csv_rows(spec_dir / "variants.csv", VariantRow, "variants.csv")
+    studies: list[StudyRow] = []
+    if (spec_dir / "studies.csv").exists():
+        studies, _, _ = _load_csv_rows(spec_dir / "studies.csv", StudyRow, "studies.csv")
+
+    all_warnings = list(validation.warnings)
+    if resolve_with_ensembl:
+        from just_dna_compiler.resolver import resolve_variants
+
+        variants, resolve_warnings = resolve_variants(variants, ensembl_cache)
+        all_warnings.extend(resolve_warnings)
+
+    module_name = config.module.name
+    weights_df = _build_weights(variants, config)
+    annotations_df = _build_annotations(variants, module_name)
+    studies_df = _build_studies(studies, module_name) if studies else None
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    weights_df.write_parquet(output_dir / "weights.parquet", compression=compression)
+    annotations_df.write_parquet(output_dir / "annotations.parquet", compression=compression)
+    if studies_df is not None:
+        studies_df.write_parquet(output_dir / "studies.parquet", compression=compression)
+
+    logs = _collect_logs(spec_dir, output_dir, log_files)
+    manifest = _build_manifest(
+        config=config,
+        spec_dir=spec_dir,
+        output_dir=output_dir,
+        validation=validation,
+        weights_rows=weights_df.height,
+        warnings=all_warnings,
+        compiled_by=compiled_by,
+        ensembl_reference=ensembl_reference,
+        logs=logs,
+    )
+    write_manifest(manifest, output_dir / "manifest.json")
+
+    stats: dict[str, Any] = {
+        "module_name": module_name,
+        "weights_rows": weights_df.height,
+        "annotations_rows": annotations_df.height,
+        "studies_rows": studies_df.height if studies_df is not None else 0,
+    }
+    return CompilationResult(
+        success=True,
+        output_dir=output_dir,
+        errors=[],
+        warnings=all_warnings,
+        stats=stats,
+        manifest=manifest,
+    )
+
+
+def _build_manifest(
+    *,
+    config: ModuleSpecConfig,
+    spec_dir: Path,
+    output_dir: Path,
+    validation: ValidationResult,
+    weights_rows: int,
+    warnings: list[str],
+    compiled_by: Optional[str],
+    ensembl_reference: Optional[str],
+    logs: list[FileEntry],
+) -> ModuleManifest:
+    """Assemble the manifest from the spec, validation stats, and hashed input/output/log files."""
+    module = config.module
+    vstats = validation.stats
+    return ModuleManifest(
+        identity=Identity(name=module.name),
+        display=Display(
+            title=module.title,
+            description=module.description,
+            report_title=module.report_title,
+            icon=module.icon,
+            color=module.color,
+        ),
+        genome_build=config.genome_build,
+        curator=config.defaults.curator,
+        method=config.defaults.method,
+        stats=Stats(
+            variant_count=vstats.get("variant_count", 0),
+            weights_rows=weights_rows,
+            study_count=vstats.get("study_count", 0),
+            gene_count=vstats.get("gene_count", 0),
+            genes=vstats.get("genes", []),
+            categories=vstats.get("categories", []),
+        ),
+        compilation=Compilation(
+            compile_success=True,
+            compiled_by=compiled_by,
+            compiler_version=_compiler_version(),
+            ensembl_reference=ensembl_reference,
+            compiled_at=_now_iso(),
+            warnings=warnings,
+        ),
+        inputs=file_entries(spec_dir, list(_INPUT_FILES)),
+        artifact=build_artifact(output_dir, list(_OUTPUT_FILES)),
+        logs=logs,
+    )
+
+
+# ── Parquet builders ───────────────────────────────────────────────────────────
+
+
+def _build_weights(variants: list[VariantRow], config: ModuleSpecConfig) -> pl.DataFrame:
+    """Build the weights.parquet DataFrame from validated variant rows."""
+    defaults = config.defaults
+    module_name = config.module.name
+    records: list[dict[str, Any]] = []
+    for v in variants:
+        priority = v.priority if v.priority is not None else defaults.priority
+        records.append(
+            {
+                "rsid": v.rsid,
+                "genotype": v.genotype.split("/"),
+                "module": module_name,
+                "weight": v.weight,
+                "state": v.state,
+                "priority": priority,
+                "conclusion": v.conclusion,
+                "curator": v.curator or defaults.curator,
+                "method": v.method or defaults.method,
+                "chrom": v.chrom,
+                "start": v.start,
+                "end": v.start,
+                "ref": v.ref,
+                "alts": v.alts.split(",") if v.alts else None,
+                "clinvar": v.clinvar if v.clinvar is not None else False,
+                "pathogenic": v.pathogenic if v.pathogenic is not None else False,
+                "benign": v.benign if v.benign is not None else False,
+                "likely_pathogenic": False,
+                "likely_benign": False,
+            }
+        )
+    schema = {
+        "rsid": pl.Utf8,
+        "genotype": pl.List(pl.Utf8),
+        "module": pl.Utf8,
+        "weight": pl.Float64,
+        "state": pl.Utf8,
+        "priority": pl.Utf8,
+        "conclusion": pl.Utf8,
+        "curator": pl.Utf8,
+        "method": pl.Utf8,
+        "chrom": pl.Utf8,
+        "start": pl.UInt32,
+        "end": pl.UInt32,
+        "ref": pl.Utf8,
+        "alts": pl.List(pl.Utf8),
+        "clinvar": pl.Boolean,
+        "pathogenic": pl.Boolean,
+        "benign": pl.Boolean,
+        "likely_pathogenic": pl.Boolean,
+        "likely_benign": pl.Boolean,
+    }
+    return pl.DataFrame(records, schema=schema)
+
+
+def _build_annotations(variants: list[VariantRow], module_name: str) -> pl.DataFrame:
+    """Build annotations.parquet, deduplicated by variant_key (first occurrence wins)."""
+    seen_keys: set[str] = set()
+    records: list[dict[str, Optional[str]]] = []
+    for v in variants:
+        key = v.variant_key
+        if key not in seen_keys:
+            records.append(
+                {
+                    "rsid": v.rsid,
+                    "module": module_name,
+                    "gene": v.gene or "",
+                    "phenotype": v.phenotype or "",
+                    "category": v.category or "",
+                }
+            )
+            seen_keys.add(key)
+    schema = {
+        "rsid": pl.Utf8,
+        "module": pl.Utf8,
+        "gene": pl.Utf8,
+        "phenotype": pl.Utf8,
+        "category": pl.Utf8,
+    }
+    return pl.DataFrame(records, schema=schema)
+
+
+def _build_studies(studies: list[StudyRow], module_name: str) -> pl.DataFrame:
+    """Build the studies.parquet DataFrame from validated study rows."""
+    records: list[dict[str, Any]] = []
+    for s in studies:
+        records.append(
+            {
+                "rsid": s.rsid,
+                "module": module_name,
+                "pmid": s.pmid,
+                "population": s.population,
+                "p_value": s.p_value,
+                "conclusion": s.conclusion,
+                "study_design": s.study_design,
+            }
+        )
+    schema = {
+        "rsid": pl.Utf8,
+        "module": pl.Utf8,
+        "pmid": pl.Utf8,
+        "population": pl.Utf8,
+        "p_value": pl.Utf8,
+        "conclusion": pl.Utf8,
+        "study_design": pl.Utf8,
+    }
+    return pl.DataFrame(records, schema=schema)
+
+
+# ── Reverse engineering ────────────────────────────────────────────────────────
+
+
+def reverse_module(
+    parquet_dir: Path,
+    output_dir: Path,
+    module_name: Optional[str] = None,
+    title: Optional[str] = None,
+    description: Optional[str] = None,
+    report_title: Optional[str] = None,
+    icon: str = "database",
+    color: str = "#6435c9",
+) -> Path:
+    """Reverse-engineer a parquet module back into the spec DSL (yaml + csv). Returns output_dir."""
+    parquet_dir = Path(parquet_dir)
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    weights_df = pl.read_parquet(parquet_dir / "weights.parquet")
+    if module_name is None:
+        if "module" in weights_df.columns:
+            module_name = weights_df["module"].drop_nulls().unique().to_list()[0]
+        else:
+            module_name = parquet_dir.name
+
+    default_curator = _most_common(weights_df, "curator") or "unknown"
+    default_method = _most_common(weights_df, "method") or "unknown"
+    default_priority: Optional[str] = None
+    if "priority" in weights_df.columns:
+        non_null = weights_df["priority"].drop_nulls()
+        if non_null.len() > 0:
+            default_priority = non_null.mode().to_list()[0]
+
+    annotations_df: Optional[pl.DataFrame] = None
+    ann_path = parquet_dir / "annotations.parquet"
+    if ann_path.exists():
+        annotations_df = pl.read_parquet(ann_path)
+
+    defaults_dict: dict[str, Any] = {"curator": default_curator, "method": default_method}
+    if default_priority is not None:
+        defaults_dict["priority"] = default_priority
+
+    spec = {
+        "schema_version": "1.0",
+        "module": {
+            "name": module_name,
+            "title": title or module_name.replace("_", " ").title(),
+            "description": description or f"Annotation module: {module_name}",
+            "report_title": report_title or module_name.replace("_", " ").title(),
+            "icon": icon,
+            "color": color,
+        },
+        "defaults": defaults_dict,
+        "genome_build": "GRCh38",
+    }
+    (output_dir / "module_spec.yaml").write_text(
+        yaml.dump(spec, default_flow_style=False, sort_keys=False), encoding="utf-8"
+    )
+
+    ann_lookup: dict[str, dict[str, str]] = {}
+    if annotations_df is not None:
+        for row in annotations_df.iter_rows(named=True):
+            ann_lookup[row["rsid"]] = {
+                "gene": row.get("gene", ""),
+                "phenotype": row.get("phenotype", ""),
+                "category": row.get("category", ""),
+            }
+
+    _write_variants_csv(
+        weights_df, ann_lookup, default_curator, default_method, default_priority,
+        output_dir / "variants.csv",
+    )
+    studies_path = parquet_dir / "studies.parquet"
+    if studies_path.exists():
+        _write_studies_csv(pl.read_parquet(studies_path), output_dir / "studies.csv")
+    return output_dir
+
+
+def _most_common(df: pl.DataFrame, col: str) -> Optional[str]:
+    """Return the most common non-null value in a column, or None."""
+    if col not in df.columns:
+        return None
+    non_null = df[col].drop_nulls()
+    if non_null.len() == 0:
+        return None
+    return non_null.mode().to_list()[0]
+
+
+def _write_variants_csv(
+    weights_df: pl.DataFrame,
+    ann_lookup: dict[str, dict[str, str]],
+    default_curator: str,
+    default_method: str,
+    default_priority: Optional[str],
+    output_path: Path,
+) -> None:
+    """Write variants.csv from weights parquet + annotations lookup."""
+    fieldnames = [
+        "rsid", "chrom", "start", "ref", "alts", "genotype", "weight", "state", "conclusion",
+        "priority", "gene", "phenotype", "category", "clinvar", "pathogenic", "benign",
+        "curator", "method",
+    ]
+    with open(output_path, "w", encoding="utf-8", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        for row in weights_df.iter_rows(named=True):
+            rsid = row.get("rsid") or ""
+            ann = ann_lookup.get(rsid, {})
+            genotype_list = row.get("genotype", [])
+            alts_list = row.get("alts")
+            curator = row.get("curator", "")
+            method = row.get("method", "")
+            priority = row.get("priority")
+            clinvar = row.get("clinvar", False)
+            pathogenic = row.get("pathogenic", False)
+            benign = row.get("benign", False)
+            writer.writerow(
+                {
+                    "rsid": rsid,
+                    "chrom": row.get("chrom", ""),
+                    "start": row.get("start", ""),
+                    "ref": row.get("ref", ""),
+                    "alts": ",".join(alts_list) if alts_list else "",
+                    "genotype": "/".join(genotype_list) if genotype_list else "",
+                    "weight": row.get("weight") if row.get("weight") is not None else "",
+                    "state": row.get("state", ""),
+                    "conclusion": row.get("conclusion", ""),
+                    "priority": priority if priority != default_priority else "",
+                    "gene": ann.get("gene", ""),
+                    "phenotype": ann.get("phenotype", ""),
+                    "category": ann.get("category", ""),
+                    "clinvar": str(clinvar).lower() if clinvar else "",
+                    "pathogenic": str(pathogenic).lower() if pathogenic else "",
+                    "benign": str(benign).lower() if benign else "",
+                    "curator": curator if curator != default_curator else "",
+                    "method": method if method != default_method else "",
+                }
+            )
+
+
+def _write_studies_csv(studies_df: pl.DataFrame, output_path: Path) -> None:
+    """Write studies.csv from studies parquet."""
+    fieldnames = ["rsid", "pmid", "population", "p_value", "conclusion", "study_design"]
+    with open(output_path, "w", encoding="utf-8", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        for row in studies_df.iter_rows(named=True):
+            pmid = row.get("pmid")
+            if pmid is None or str(pmid).strip() == "":
+                continue
+            writer.writerow(
+                {
+                    "rsid": row["rsid"],
+                    "pmid": str(pmid).strip(),
+                    "population": row.get("population") or "",
+                    "p_value": row.get("p_value") or "",
+                    "conclusion": row.get("conclusion") or "",
+                    "study_design": row.get("study_design") or "",
+                }
+            )

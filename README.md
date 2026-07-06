@@ -1,42 +1,30 @@
-# just-dna-module
+# just-dna-format
 
-The declarative **manifest contract** and **integrity primitives** for just-dna annotation
-modules. Dependency-light (Pydantic + stdlib only) so it can be shared as the single source of
-truth by both:
+The **module format** for just-dna annotation modules — the declarative schema/contract and its
+reference compiler — as a uv workspace publishing two packages:
 
-- **`just-dna-pipelines`** — *emits* `manifest.json` when it compiles a module, and
-- **`just-dna-marketplace`** — *indexes, serves, and verifies* those manifests.
+| Package | Path | What it is | Deps |
+|---|---|---|---|
+| [`just-dna-format`](schema) | `schema/` | The schema + integrity contract: the authored DSL spec, the compiled `manifest.json`, digests, identity/versioning. | Pydantic + stdlib |
+| [`just-dna-compiler`](compiler) | `compiler/` | The transform: spec directory → three-parquet artifact + `manifest.json`. | + polars, duckdb, pyyaml |
 
-Keeping the contract in one small package prevents the two sides from drifting.
+**Why two packages, one repo.** `just-dna-format` stays dependency-light so *anyone* — a thin API,
+a webui client, a downloader that only verifies a digest — can depend on it for the cost of
+`pydantic`. The compiler's polars/duckdb weight lives in `just-dna-compiler`. Consumers pick the
+tier they need:
 
-## What's here
+- verify-only client → `just-dna-format`
+- compile / recompile (marketplace, pipelines) → `just-dna-compiler` (pulls `just-dna-format`)
+- neither pulls Dagster or LLM SDKs — those stay in `just-dna-pipelines`.
 
-| Module | Contents |
-|---|---|
-| `just_dna_module.manifest` | `ModuleManifest` + sub-models (`Identity`, `Display`, `Stats`, `Compilation`, `FileEntry`, `Artifact`); `read_manifest` / `write_manifest`. Mirrors the marketplace SPEC §4. |
-| `just_dna_module.integrity` | `sha256_file`, `artifact_digest` (canonical Merkle root), `build_artifact`, `verify_manifest` (verify-then-install), `IntegrityError`. SPEC §5. |
-| `just_dna_module.identity` | Name/namespace rules, `canonical_id`, SemVer `Version` + `parse_version`, `version_from_legacy` (`vN → N.0.0`), `latest`. SPEC §6. |
-
-## Usage
-
-```python
-from just_dna_module.manifest import ModuleManifest, read_manifest
-from just_dna_module.integrity import build_artifact, verify_manifest
-
-# Compiler side: hash outputs and record the digest.
-artifact = build_artifact(output_dir, ["weights.parquet", "annotations.parquet", "studies.parquet"])
-
-# Downloader side: verify before installing (raises IntegrityError on any mismatch).
-verify_manifest(module_dir, read_manifest(module_dir / "manifest.json"))
-```
-
-All hashes are SHA-256, lowercase hex, prefixed `sha256:`. The `artifact.digest` is a Merkle-style
-root over the canonical file listing — verifying it verifies the whole set and is the version's
-immutable content identity.
+Co-locating them keeps the schema and the compiler that targets it in one place (no cross-repo
+fetch to understand the contract), while uv still builds/publishes two independent distributions.
 
 ## Develop
 
+```bash
+uv sync              # installs both members + dev tools into one workspace venv
+uv run pytest        # runs schema/ and compiler/ test suites
 ```
-uv sync
-uv run pytest -vvv
-```
+
+Build both distributions: `uv build --all-packages`.
