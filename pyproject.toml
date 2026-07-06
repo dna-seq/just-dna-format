@@ -1,0 +1,18 @@
+[project]
+name = "just-dna-module"
+version = "0.1.0"
+description = "Declarative manifest contract and integrity primitives for just-dna annotation modules"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "pydantic>=2.12.5",
+]
+
+[build-system]
+requires = ["uv-build"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.3",
+]
