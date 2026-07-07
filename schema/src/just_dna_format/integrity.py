@@ -9,15 +9,21 @@ Time is never read here: callers pass any timestamps into the manifest. This kee
 pure and deterministic.
 """
 
+import base64
 import hashlib
 import json
 from pathlib import Path
+from typing import Optional
+
+from cryptography.exceptions import InvalidSignature
+from cryptography.hazmat.primitives.asymmetric import ed25519
 
 from just_dna_format.manifest import (
     MARKETPLACE_COMPILED_BY,
     Artifact,
     FileEntry,
     ModuleManifest,
+    Signature,
 )
 
 SHA256_PREFIX: str = "sha256:"
@@ -26,6 +32,26 @@ _CHUNK: int = 1 << 20  # 1 MiB streaming reads
 
 class IntegrityError(Exception):
     """Raised when a file hash, artifact digest, or trust check fails verification."""
+
+
+def verify_signature(
+    digest: str, signature: Signature, *, trusted_public_key: Optional[str] = None
+) -> None:
+    """Verify a `Signature` over the `artifact.digest` string. Raises `IntegrityError` on failure.
+
+    When `trusted_public_key` (base64 raw) is given, the signature MUST have been made by that key
+    — this is the real defense (a self-embedded key proves nothing against a backend that can
+    rewrite both digest and key). When omitted, only self-consistency is checked.
+    """
+    if signature.algorithm != "ed25519":
+        raise IntegrityError(f"unsupported signature algorithm: {signature.algorithm!r}")
+    if trusted_public_key is not None and trusted_public_key != signature.public_key:
+        raise IntegrityError("signature public key does not match the trusted (pinned) key")
+    try:
+        pub = ed25519.Ed25519PublicKey.from_public_bytes(base64.b64decode(signature.public_key))
+        pub.verify(base64.b64decode(signature.signature), digest.encode("utf-8"))
+    except (InvalidSignature, ValueError) as exc:
+        raise IntegrityError(f"artifact digest signature is invalid: {exc}")
 
 
 def sha256_bytes(data: bytes) -> str:
@@ -82,6 +108,9 @@ def verify_manifest(
     require_marketplace: bool = True,
     check_inputs: bool = False,
     check_logs: bool = False,
+    check_provenance: bool = False,
+    check_logo: bool = False,
+    public_key: Optional[str] = None,
 ) -> None:
     """
     Verify a downloaded module against its manifest (SPEC §5 verify-then-install).
@@ -94,6 +123,13 @@ def verify_manifest(
       4. Optionally (`check_inputs`) every `inputs[]` file on disk matches its declared hash.
       5. Optionally (`check_logs`) every `logs[]` file *present* on disk matches its declared hash;
          absent logs are skipped, since logs are optional and need not be downloaded.
+      6. Optionally (`check_provenance`) the `provenance` document, if declared and present on disk,
+         matches its declared hash; an absent provenance file is skipped (it is optional).
+      6b. Optionally (`check_logo`) the `logo`, if declared and present on disk, matches its declared
+         hash; an absent logo is skipped (it is optional and out of `artifact.digest`).
+      7. Signature (SPEC §5): if `public_key` (base64 raw) is given, the manifest MUST carry a
+         signature over `artifact.digest` made by that key. If a signature is present but no key is
+         pinned, it is verified for self-consistency only.
 
     Raises `IntegrityError` on the first failure; returns `None` on success.
     """
@@ -149,3 +185,32 @@ def verify_manifest(
                     f"log hash mismatch for {entry.name}: "
                     f"declared {entry.sha256}, computed {actual}"
                 )
+
+    if check_provenance and manifest.provenance is not None:
+        prov = manifest.provenance
+        if prov.file and prov.sha256:
+            path = module_dir / prov.file
+            if path.is_file():  # provenance is optional — an absent one is not a failure
+                actual = sha256_file(path)
+                if actual != prov.sha256:
+                    raise IntegrityError(
+                        f"provenance hash mismatch for {prov.file}: "
+                        f"declared {prov.sha256}, computed {actual}"
+                    )
+
+    if check_logo and manifest.logo is not None:
+        path = module_dir / manifest.logo.name
+        if path.is_file():  # logo is optional — an absent one is not a failure
+            actual = sha256_file(path)
+            if actual != manifest.logo.sha256:
+                raise IntegrityError(
+                    f"logo hash mismatch for {manifest.logo.name}: "
+                    f"declared {manifest.logo.sha256}, computed {actual}"
+                )
+
+    if manifest.signature is not None:
+        verify_signature(
+            manifest.artifact.digest, manifest.signature, trusted_public_key=public_key
+        )
+    elif public_key is not None:
+        raise IntegrityError("public_key pinned but manifest carries no signature")

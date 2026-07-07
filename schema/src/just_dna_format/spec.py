@@ -16,7 +16,7 @@ from typing import Optional
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from just_dna_format.identity import validate_name
-from just_dna_format.manifest import SCHEMA_VERSION, Display
+from just_dna_format.manifest import SCHEMA_VERSION, Display, GenePanelSpec
 
 VALID_STATES: frozenset[str] = frozenset(
     {"risk", "protective", "neutral", "significant", "alt", "ref"}
@@ -26,6 +26,21 @@ VALID_CHROMOSOMES: frozenset[str] = frozenset(
 )
 RSID_PATTERN: re.Pattern[str] = re.compile(r"^rs\d+$")
 ALLELE_PATTERN: re.Pattern[str] = re.compile(r"^[ACGT]+$", re.IGNORECASE)
+# A PMID is a run of digits. Real sources present them bare (`9545397`), bracketed/prefixed
+# (`[PMID: 9545397]`), or as a `;`-joined list (`PMID 17478681; PMID: 30278588`). We accept any
+# string that carries at least one PMID token and keep it verbatim (ROADMAP item 6 / Obs #4).
+PMID_PATTERN: re.Pattern[str] = re.compile(r"\b(\d{1,8})\b")
+
+
+def extract_pmids(raw: str) -> list[str]:
+    """Pull digit-only PMIDs out of a free-form reference string, in order, de-duplicated.
+
+    Handles bare digits, the bracketed/prefixed `[PMID: N]` / `PMID N` forms, and `;`-joined
+    lists. Returns an empty list when the string carries no PMID token (e.g. a dbSNP URL)."""
+    seen: dict[str, None] = {}
+    for match in PMID_PATTERN.finditer(raw):
+        seen.setdefault(match.group(1), None)
+    return list(seen)
 
 
 class ModuleInfo(Display):
@@ -60,6 +75,14 @@ class ModuleSpecConfig(BaseModel):
     module: ModuleInfo = Field(description="Module identity and display metadata")
     defaults: Defaults = Field(default_factory=Defaults, description="Default variant-row values")
     genome_build: str = Field(default="GRCh38", description="Reference genome build for positions")
+    panel: Optional[GenePanelSpec] = Field(
+        default=None,
+        description=(
+            "Optional gene-panel declaration (ROADMAP item 7). Descriptive provenance for modules "
+            "derived from a gene set + significance predicate; the compiler records it verbatim "
+            "but does not materialize variants from it in this version."
+        ),
+    )
 
     @field_validator("schema_version")
     @classmethod
@@ -81,6 +104,13 @@ class VariantRow(BaseModel):
     weight: Optional[float] = Field(default=None, description="Score (positive=protective)")
     state: str = Field(description="One of: risk, protective, neutral, significant, alt, ref")
     conclusion: str = Field(description="Human-readable interpretation for this genotype")
+    negatives: Optional[str] = Field(
+        default=None,
+        description=(
+            "Optional free-text adverse/antagonistic-pleiotropy counterpart to `conclusion` "
+            "(e.g. a protective allele's known trade-off). Consumers ignore it when absent."
+        ),
+    )
     priority: Optional[str] = Field(default=None, description="Priority level override")
     gene: Optional[str] = Field(default=None, description="Gene symbol, e.g. MTHFR")
     phenotype: Optional[str] = Field(default=None, description="Associated trait or phenotype")
@@ -198,7 +228,12 @@ class StudyRow(BaseModel):
         v = str(v).strip()
         if not v:
             raise ValueError("pmid must not be empty")
-        return v
+        if not extract_pmids(v):
+            raise ValueError(
+                f"pmid must contain at least one PubMed ID (bare digits, or a bracketed/prefixed "
+                f"form like '[PMID: 9545397]'), got: {v!r}"
+            )
+        return v  # kept verbatim; use extract_pmids(pmid) to recover digit-only ids
 
     @model_validator(mode="after")
     def _validate_study_identification(self) -> "StudyRow":

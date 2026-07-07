@@ -5,6 +5,85 @@ Shared change log for the just-dna module format/compiler ecosystem. Because
 **just-dna-marketplace**, and **just-dna-agents**, cross-repo integration changes are recorded
 here so parallel work in the other repos isn't surprised. Newest first.
 
+## 2026-07-07 — just-dna-format 0.2.0 + just-dna-compiler 0.2.0
+
+First contract release since 0.1.0. **Every change is additive and backwards-compatible**: the
+`manifest_version`/`schema_version` stay `"1.0"`, and every 0.1.0 module keeps compiling and
+verifying byte-for-byte unchanged (optional fields are absent, optional files never invalidate).
+Consumed by just-dna-marketplace 0.5.0.
+
+- **Structured provenance (ROADMAP #1).** New `Provenance` summary on the manifest + `ProvenanceItem`
+  / `ProvenanceDoc` models. The compiler auto-discovers `spec_dir/provenance.json` (per-variant
+  rationale/verdict/confidence/human-review items), ships + hashes it like a log (kept **out of
+  `artifact.digest`**), and records the lean summary (`generator`, `model`, `agent_version`,
+  `item_count`, `sha256`) so a catalog can flag "AI-authored · rationale available" without inlining
+  text. `verify_manifest(check_provenance=True)` re-hashes it when present.
+- **Ed25519 signing (ROADMAP #2 / SPEC §5).** New optional `Signature` block on the manifest, a
+  `signing` module (`sign_digest`, `generate_private_key_pem`, `public_key_b64_from_pem`), and
+  `integrity.verify_signature`. `verify_manifest(public_key=...)` enforces a pinned key. Signs the
+  `artifact.digest` string. Adds a `cryptography` dependency to `just-dna-format`.
+- **Cross-version log aggregation (ROADMAP #3).** New `aggregate` module: `aggregate_logs` /
+  `aggregate_provenance` return the deduplicated union across a set of version manifests
+  ("v3 provenance = v1+v2+v3").
+- **ClinVar/quality stats (ROADMAP #5).** `Stats` gains `clinvar_count` / `pathogenic_count` /
+  `benign_count`; `validate_spec` and the manifest now summarize the per-row ClinVar flags.
+- **PMID validation (ROADMAP #6).** `StudyRow.pmid` now requires at least one extractable PubMed ID
+  (bare digits or the legacy `[PMID: N]` / `PMID N; ...` forms) via a re-introduced `PMID_PATTERN` +
+  `extract_pmids` helper. The string is kept **verbatim**; a dbSNP URL (no PMID token) is rejected.
+  Audited against the Gen-I corpus (all digit-only) so nothing published is invalidated.
+- **Gene-panel interface (ROADMAP #7) — interface only, no machinery.** New `GenePanelSpec`
+  (`source`, `reference`, `reference_sha256`, `genes`, `significance`), optional on `ModuleSpecConfig`
+  and mirrored on the manifest. The compiler records it **verbatim** and does not materialize
+  variants from it; the app-level `gene_panel` adapter (just-dna-lite) can now declare its panel
+  provenance structurally. Native compile-time materialization is a follow-up gated on a working
+  ClinVar reference mixin.
+- **Module logo + icon set.** `Display.icon_set` (`fomantic` | `awesome`) selects the no-logo
+  fallback glyph's family. New optional `manifest.logo` (`FileEntry`): the compiler discovers
+  `spec_dir/logo.{png,jpg,jpeg}`, ships + hashes it, **out of `artifact.digest`** (so a logo swap is
+  a PATCH, not a new content identity). `verify_manifest(check_logo=True)` re-hashes when present.
+- **`negatives` field (ROADMAP Obs #5).** Optional free-text `VariantRow.negatives` (adverse /
+  antagonistic-pleiotropy counterpart to `conclusion`), carried into `weights.parquet` and the
+  reverse round-trip.
+- **Docs.** `ValidationResult.stats` now documents its de-facto key contract (ROADMAP Obs #1). Item 4
+  (resolver provisioning) is unchanged: strictly inject-only, no network.
+
+## 2026-07-07 — just-dna-lite: longevitymap full parity + gene-panel reference implementation
+
+Consumer-side only; no changes to the published packages. Two Gen-I parity advances in just-dna-lite,
+flagged here so `-marketplace`/`-agents` see them:
+
+- **longevitymap reached 528/528 rsid parity** (was 518/528). The gap was not Ensembl coverage but a
+  genotype-reconstruction bug: heterozygous genotypes were built by concatenating the Ensembl `ref` +
+  `alt` columns, and `alt` is a `|`-joined multiallelic list. The fix pairs the module's curated
+  effect allele with its single complement and parses two-base `spec` alleles directly. No format API
+  change; still compiles under the 0.1.0 contract.
+- **Gene-panel reference implementation** for `cardio`/`cancer` (`just_dna_pipelines.v1_port.clinvar`
+  + a `gene_panel` adapter): enumerates ClinVar pathogenic/likely-pathogenic variants in the panel's
+  gene list into risk-state VariantRows (het + hom-alt), `weight=None`, grounded to the ClinVar
+  resource paper (PMID 29165669). Kept within the 0.1.0 contract (multi-base ACGT alleles are legal;
+  structural >50 bp and symbolic alleles are dropped). This is the intended upstream reference for a
+  native `GenePanelSpec` — see **ROADMAP item 7** (added the same day, with items 8/9 for the APOE
+  diplotype and PharmGKB shapes). `pathogenic`/`lnewco`/`drugs` remain deferred.
+
+## 2026-07-06 — just-dna-lite ported the Generation-I OakVar modules onto the DSL
+
+Consumer-side only; no changes to the published packages. just-dna-lite added
+`just_dna_pipelines.v1_port` (CLI `pipelines v1-port`), which downloads the Generation-I `just_*`
+OakVar postaggregator modules from the `dna-seq` GitHub org, converts their curated SQLite into the
+authored DSL (`module_spec.yaml` + `variants.csv` + `studies.csv`), validates and compiles them via
+`validate_spec`/`compile_module`, and writes standalone modules to `data/interim/v1_port/`.
+
+- **Curated weights are carried verbatim**; `state` is taken from the source where present and
+  otherwise from the weight's sign (reproducing the v1 reporter's `get_color(weight)` behavior).
+- **All emitted `pmid` values are digit-only** — see ROADMAP.md → Observations #4 for the PMID audit
+  this produced (input to planned item 6; the Gen-I corpus would not be rejected by a bare-digit
+  `PMID_PATTERN`).
+- Five modules (coronary, thrombophilia, lipidmetabolism, vo2max, longevitymap) compile; the
+  reproduced coronary/vo2max/lipidmetabolism rsid sets match the published HF artifacts exactly and
+  longevitymap matches 518/528. `superhuman` (URL-only references → no PMIDs) and the non-variant
+  modules (cardio/cancer/pathogenic gene panels, drugs/PharmGKB, lnewco APOE diplotype) are
+  documented as gaps, not ported. No `just-dna-format` API was exercised beyond the 0.1.0 contract.
+
 ## 2026-07-06 — just-dna-pipelines repointed at the published libs
 
 Consumer-side integration in `just-dna-lite/just-dna-pipelines`. No changes to the published

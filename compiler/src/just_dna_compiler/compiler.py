@@ -19,13 +19,16 @@ from typing import Any, Optional
 
 import polars as pl
 import yaml
-from just_dna_format.integrity import build_artifact, file_entries
+from just_dna_format.integrity import build_artifact, file_entries, file_entry, sha256_file
 from just_dna_format.manifest import (
+    LOGO_EXTENSIONS,
     Compilation,
     Display,
     FileEntry,
     Identity,
     ModuleManifest,
+    Provenance,
+    ProvenanceDoc,
     Stats,
     write_manifest,
 )
@@ -36,6 +39,9 @@ from just_dna_compiler.models import CompilationResult, ValidationResult
 
 _INPUT_FILES: tuple[str, ...] = ("module_spec.yaml", "variants.csv", "studies.csv")
 _OUTPUT_FILES: tuple[str, ...] = ("weights.parquet", "annotations.parquet", "studies.parquet")
+# Optional structured-provenance document authored beside the spec (ROADMAP item 1). Hashed and
+# shipped like logs, kept OUT of `artifact.digest` (it is not in `_OUTPUT_FILES`).
+_PROVENANCE_FILE: str = "provenance.json"
 
 
 def _compiler_version() -> str:
@@ -87,6 +93,64 @@ def _collect_logs(
             shutil.copyfile(src, dest)
         names.append(rel)
     return file_entries(output_dir, names)
+
+
+def _collect_provenance(
+    spec_dir: Path, output_dir: Path, explicit: Optional[Path]
+) -> Optional[Provenance]:
+    """Discover an optional `provenance.json`, validate it, ship it, and summarize it.
+
+    Auto-discovers `spec_dir/provenance.json` (or uses an explicit path). The full per-variant
+    items stay in the file (copied into the module dir, hashed like logs, and kept out of
+    `artifact.digest`); the returned `Provenance` is the lean summary that rides in the manifest.
+    Absent provenance → `None` (a valid module).
+    """
+    src = Path(explicit) if explicit is not None else spec_dir / _PROVENANCE_FILE
+    if not src.is_file():
+        return None
+    doc = ProvenanceDoc.model_validate_json(src.read_text(encoding="utf-8"))
+    dest = output_dir / _PROVENANCE_FILE
+    if dest.resolve() != src.resolve():
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(src, dest)
+    return Provenance(
+        generator=doc.generator,
+        model=doc.model,
+        agent_version=doc.agent_version,
+        item_count=len(doc.items),
+        file=_PROVENANCE_FILE,
+        sha256=sha256_file(dest),
+    )
+
+
+def _collect_logo(
+    spec_dir: Path, output_dir: Path, explicit: Optional[Path]
+) -> Optional[FileEntry]:
+    """Discover an optional module logo (`logo.png`/`.jpg`/`.jpeg`), ship it, and hash it.
+
+    Uses an explicit path if given, else the first `logo.<ext>` (in `LOGO_EXTENSIONS` order) found
+    beside the spec. The logo is copied into the module dir and returned as a hashed `FileEntry`
+    kept OUT of `artifact.digest` (a logo swap is a PATCH, not a new content identity). Absent
+    logo → `None`. Raises `ValueError` on an unsupported extension.
+    """
+    if explicit is not None:
+        src: Optional[Path] = Path(explicit)
+    else:
+        src = next(
+            (spec_dir / f"logo.{ext}" for ext in sorted(LOGO_EXTENSIONS)
+             if (spec_dir / f"logo.{ext}").is_file()),
+            None,
+        )
+    if src is None or not src.is_file():
+        return None
+    ext = src.suffix.lower().lstrip(".")
+    if ext not in LOGO_EXTENSIONS:
+        raise ValueError(f"logo must be one of {sorted(LOGO_EXTENSIONS)}, got: {src.name!r}")
+    dest = output_dir / src.name
+    if dest.resolve() != src.resolve():
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(src, dest)
+    return file_entry(output_dir, src.name)
 
 
 # ── File loading helpers ───────────────────────────────────────────────────────
@@ -200,7 +264,9 @@ def validate_spec(spec_dir: Path) -> ValidationResult:
     """Validate a module spec directory without producing output.
 
     Stats include `genes`/`categories` as lists (filtering None) plus `variant_count`,
-    `gene_count`, and `study_count` — the fields the manifest needs.
+    `gene_count`, `study_count`, and the ClinVar quality counts
+    (`clinvar_count`/`pathogenic_count`/`benign_count`) — the fields the manifest needs. See
+    `ValidationResult.stats` for the full key contract.
     """
     spec_dir = Path(spec_dir)
     all_errors: list[str] = []
@@ -256,6 +322,10 @@ def validate_spec(spec_dir: Path) -> ValidationResult:
             "genes": genes,
             "categories": categories,
             "study_count": len(studies),
+            # ClinVar/quality flag counts over variant rows (ROADMAP item 5).
+            "clinvar_count": sum(1 for v in variants if v.clinvar),
+            "pathogenic_count": sum(1 for v in variants if v.pathogenic),
+            "benign_count": sum(1 for v in variants if v.benign),
         }
         if config:
             stats["module_name"] = config.module.name
@@ -274,6 +344,8 @@ def compile_module(
     compiled_by: Optional[str] = None,
     ensembl_reference: Optional[str] = None,
     log_files: Optional[list[Path]] = None,
+    provenance_file: Optional[Path] = None,
+    logo_file: Optional[Path] = None,
 ) -> CompilationResult:
     """Compile a module spec directory into parquet files plus a `manifest.json`.
 
@@ -289,6 +361,10 @@ def compile_module(
         ensembl_reference: Pinned reference id recorded in the manifest for reproducibility.
         log_files: Explicit run/provenance log files to record. If None, auto-discovers a top-level
             `*.log` plus per-role files under `spec_dir/logs/`. Logs are optional.
+        provenance_file: Explicit structured-provenance document. If None, auto-discovers
+            `spec_dir/provenance.json`. Optional; summarized into `manifest.provenance`.
+        logo_file: Explicit module logo image. If None, auto-discovers `spec_dir/logo.{png,jpg,jpeg}`.
+            Optional; hashed into `manifest.logo`, kept out of `artifact.digest`.
     """
     spec_dir = Path(spec_dir)
     output_dir = Path(output_dir)
@@ -325,6 +401,8 @@ def compile_module(
         studies_df.write_parquet(output_dir / "studies.parquet", compression=compression)
 
     logs = _collect_logs(spec_dir, output_dir, log_files)
+    provenance = _collect_provenance(spec_dir, output_dir, provenance_file)
+    logo = _collect_logo(spec_dir, output_dir, logo_file)
     manifest = _build_manifest(
         config=config,
         spec_dir=spec_dir,
@@ -335,6 +413,8 @@ def compile_module(
         compiled_by=compiled_by,
         ensembl_reference=ensembl_reference,
         logs=logs,
+        provenance=provenance,
+        logo=logo,
     )
     write_manifest(manifest, output_dir / "manifest.json")
 
@@ -365,6 +445,8 @@ def _build_manifest(
     compiled_by: Optional[str],
     ensembl_reference: Optional[str],
     logs: list[FileEntry],
+    provenance: Optional[Provenance],
+    logo: Optional[FileEntry],
 ) -> ModuleManifest:
     """Assemble the manifest from the spec, validation stats, and hashed input/output/log files."""
     module = config.module
@@ -376,6 +458,7 @@ def _build_manifest(
             description=module.description,
             report_title=module.report_title,
             icon=module.icon,
+            icon_set=module.icon_set,
             color=module.color,
         ),
         genome_build=config.genome_build,
@@ -388,6 +471,9 @@ def _build_manifest(
             gene_count=vstats.get("gene_count", 0),
             genes=vstats.get("genes", []),
             categories=vstats.get("categories", []),
+            clinvar_count=vstats.get("clinvar_count", 0),
+            pathogenic_count=vstats.get("pathogenic_count", 0),
+            benign_count=vstats.get("benign_count", 0),
         ),
         compilation=Compilation(
             compile_success=True,
@@ -400,6 +486,9 @@ def _build_manifest(
         inputs=file_entries(spec_dir, list(_INPUT_FILES)),
         artifact=build_artifact(output_dir, list(_OUTPUT_FILES)),
         logs=logs,
+        provenance=provenance,
+        panel=config.panel,
+        logo=logo,
     )
 
 
@@ -422,6 +511,7 @@ def _build_weights(variants: list[VariantRow], config: ModuleSpecConfig) -> pl.D
                 "state": v.state,
                 "priority": priority,
                 "conclusion": v.conclusion,
+                "negatives": v.negatives,
                 "curator": v.curator or defaults.curator,
                 "method": v.method or defaults.method,
                 "chrom": v.chrom,
@@ -444,6 +534,7 @@ def _build_weights(variants: list[VariantRow], config: ModuleSpecConfig) -> pl.D
         "state": pl.Utf8,
         "priority": pl.Utf8,
         "conclusion": pl.Utf8,
+        "negatives": pl.Utf8,
         "curator": pl.Utf8,
         "method": pl.Utf8,
         "chrom": pl.Utf8,
@@ -613,7 +704,7 @@ def _write_variants_csv(
     """Write variants.csv from weights parquet + annotations lookup."""
     fieldnames = [
         "rsid", "chrom", "start", "ref", "alts", "genotype", "weight", "state", "conclusion",
-        "priority", "gene", "phenotype", "category", "clinvar", "pathogenic", "benign",
+        "negatives", "priority", "gene", "phenotype", "category", "clinvar", "pathogenic", "benign",
         "curator", "method",
     ]
     with open(output_path, "w", encoding="utf-8", newline="") as f:
@@ -641,6 +732,7 @@ def _write_variants_csv(
                     "weight": row.get("weight") if row.get("weight") is not None else "",
                     "state": row.get("state", ""),
                     "conclusion": row.get("conclusion", ""),
+                    "negatives": row.get("negatives") or "",
                     "priority": priority if priority != default_priority else "",
                     "gene": ann.get("gene", ""),
                     "phenotype": ann.get("phenotype", ""),

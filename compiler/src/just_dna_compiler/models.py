@@ -16,7 +16,12 @@ class ValidationResult(BaseModel):
     warnings: list[str] = Field(default_factory=list, description="Non-fatal warnings")
     stats: dict[str, Any] = Field(
         default_factory=dict,
-        description="Summary stats: variant_count, gene_count, genes, categories, study_count",
+        description=(
+            "Summary stats (populated only when the spec has variants). De-facto contract keys: "
+            "`variant_count` (distinct variant keys), `unique_rsids`, `gene_count`, `genes` (sorted, "
+            "None filtered), `categories` (sorted, None filtered), `study_count`, `clinvar_count`, "
+            "`pathogenic_count`, `benign_count`, and `module_name` (when the yaml loaded)."
+        ),
     )
 
 
