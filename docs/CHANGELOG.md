@@ -20,16 +20,28 @@ every 0.1/0.2 module keeps validating; all new columns are optional. Design capt
   `trait_efo_id`.
 - **Genotype widened** to accept a single allele (hemizygous X/Y, homoplasmic MT) and a phased `A|G`
   (order-preserved), alongside the existing sorted unphased `A/G`.
-- **Compiler — validator complete, some computed items intentionally deferred** (see
+- **Compiler — validator complete; derivations, boolean sync, and phase round-trip now ship** (see
   `docs/COMPILER.md`). New columns materialize into `weights.parquet`/`studies.parquet`; non-reserved
-  `flags` surface as INFO via the new `ValidationResult.info`; warnings for a two-allele `MT`
-  genotype and a `direction`/`weight` sign mismatch. Deferred (computed): `state→direction`/`clin_sig`
-  derivations, phase preservation in the artifact, new stats — and all of 0.4
-  (diplotype/copy-number/PGx star-alleles).
-- **Digest note:** the parquet schema now carries the 0.3 columns, so a re-compile changes
-  `artifact.digest` for every module (expected on a compiler-version bump; reproducibility pinned by
-  `compiler_version`, published versions keep their old digest until re-published).
-- Tests: `compiler/tests/test_v03.py` (30 new); suite 134 passed / 5 skipped.
+  `flags` surface as INFO via the new `ValidationResult.info`; warnings for a two-allele `MT` **or
+  `Y`** genotype (X excluded — it is diploid in XX) and a `direction`/`weight` sign mismatch.
+- **Upgrade derivation shipped** (`just_dna_format.derive`, `pydantic`-only leaf module). `state`(+
+  `weight`) → `direction`/`stat_significance` and the ClinVar booleans ↔ `clin_sig`, exposed as
+  non-mutating `VariantRow.effective_*` accessors plus a materializing `VariantRow.upgraded()` and a
+  `needs_upgrade` flag — the derivation the marketplace `revalidate`/`needs_upgrade` drift flow
+  consumes. `state` and the booleans **stay required/authoritative** (CONSTITUTION Principle 8 — a
+  required field is never demoted inside a major); the new axes are optional with these fallbacks.
+- **Lossless, idempotent round-trip** (CONSTITUTION Principle 7, now a durable invariant): a `phased`
+  bit in `weights.parquet` preserves `A|G` vs sorted `A/G` through `reverse_module` → recompile, and
+  compiling the same spec twice yields the same digest. Only *new computed stats* and all of 0.4
+  (diplotype/copy-number/PGx star-alleles) remain out of scope.
+- **Digest note:** the parquet schema now carries the 0.3 columns + the `phased` bit, so a re-compile
+  changes `artifact.digest` for every module (expected on a compiler-version bump; reproducibility
+  pinned by `compiler_version`; 0.3 is unpublished, so the change is still free to absorb).
+- **Docs:** new root `CLAUDE.md` makes `docs/CONSTITUTION.md` the mandatory first read (discoverability
+  gap — the charter was only linked from README/ROADMAP, with no agent entry-point). CONSTITUTION gains
+  Principle 7 (round-trip/idempotency) and Principle 8 (requiredness compatibility).
+- Tests: `compiler/tests/test_v03.py` (30) + `test_v03_roundtrip.py` (6) + `schema/tests/test_derive.py`
+  (13); suite 153 passed / 5 skipped.
 
 ## 2026-07-07 — just-dna-format 0.2.0 + just-dna-compiler 0.2.0
 

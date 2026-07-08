@@ -257,12 +257,17 @@ def _cross_validate_variants(variants: list[VariantRow]) -> tuple[list[str], lis
                 warnings.append(
                     f"{row.variant_key} genotype {row.genotype}: direction='protective' but weight={row.weight} < 0"
                 )
-        # Non-diploid guardrail (ROADMAP 0.3 item 5b): MT is not diploid, so a two-allele genotype is
-        # almost certainly wrong — a homoplasmic MT call is a single allele (e.g. 'G').
-        if row.chrom == "MT" and ("/" in row.genotype or "|" in row.genotype):
+        # Non-diploid guardrail (ROADMAP 0.3 item 5b): MT and Y are never diploid, so a two-allele
+        # genotype is almost certainly a "fake diploid" error — a homoplasmic MT call or a hemizygous
+        # Y call is a single allele (e.g. 'G'). X is deliberately excluded: it is diploid in XX
+        # samples, so a two-allele X row is legitimate (the item-5b dogfood enumerates both a
+        # single-allele hemizygous row and the diploid rows at an X-linked locus); warning on X would
+        # be pure noise. PAR vs non-PAR needs coordinates the format does not resolve — so Y (never
+        # diploid regardless of sex) is the safe, false-positive-free half of "non-PAR X/Y".
+        if row.chrom in {"MT", "Y"} and ("/" in row.genotype or "|" in row.genotype):
             warnings.append(
-                f"{row.variant_key} genotype {row.genotype}: chrom=MT is not diploid — use a "
-                f"single-allele genotype (e.g. 'G') for a homoplasmic MT call"
+                f"{row.variant_key} genotype {row.genotype}: chrom={row.chrom} is not diploid — use "
+                f"a single-allele genotype (e.g. 'G') for a homoplasmic/hemizygous call"
             )
     return errors, warnings
 
@@ -548,6 +553,10 @@ def _build_weights(variants: list[VariantRow], config: ModuleSpecConfig) -> pl.D
             {
                 "rsid": v.rsid,
                 "genotype": _split_genotype(v.genotype),
+                # Phase bit: `genotype` is stored as an allele *list*, which cannot itself
+                # distinguish a phased A|G from an unphased (sorted) A/G — both split to ["A","G"].
+                # This flag preserves the distinction so the round-trip is lossless (ROADMAP 0.3 5b).
+                "phased": "|" in v.genotype,
                 "module": module_name,
                 "weight": v.weight,
                 "state": v.state,
@@ -581,6 +590,7 @@ def _build_weights(variants: list[VariantRow], config: ModuleSpecConfig) -> pl.D
     schema = {
         "rsid": pl.Utf8,
         "genotype": pl.List(pl.Utf8),
+        "phased": pl.Boolean,
         "module": pl.Utf8,
         "weight": pl.Float64,
         "state": pl.Utf8,
@@ -793,10 +803,15 @@ def _write_variants_csv(
             clinvar = row.get("clinvar", False)
             pathogenic = row.get("pathogenic", False)
             benign = row.get("benign", False)
-            # Genotype is stored as an allele list; phase (pipe) is not preserved (deferred computed
-            # item — see docs/COMPILER.md). A two-allele genotype is re-emitted sorted/unphased.
+            # Reconstruct the genotype string. The `phased` bit (materialized alongside the allele
+            # list) tells us which separator to re-emit: a phased pair keeps its order and joins with
+            # '|'; an unphased pair is re-emitted alphabetically sorted with '/'; a single allele
+            # (hemizygous / homoplasmic) passes through. Lossless round-trip (ROADMAP 0.3 item 5b).
             if genotype_list and len(genotype_list) == 2:
-                genotype_str = "/".join(sorted(genotype_list))
+                if row.get("phased"):
+                    genotype_str = "|".join(genotype_list)
+                else:
+                    genotype_str = "/".join(sorted(genotype_list))
             else:
                 genotype_str = "/".join(genotype_list) if genotype_list else ""
             flags_list = row.get("flags")

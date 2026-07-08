@@ -78,6 +78,41 @@ graduates into a durable rule, promote it here on purpose.
 6. **Vocabulary idiom.** Constrained vocabularies are `frozenset[str]` + a validator, not
    `Enum`/`Literal`. This keeps a vocabulary additive and inspectable, and matches the existing schema.
 
+7. **Round-trip fidelity and idempotency.** The format is declarative data, so the reference
+   transform must behave like one. Within a major version:
+   - **Lossless round-trip.** `compile_module` → `reverse_module` → `compile_module` preserves every
+     authored value. Reversing a compiled artifact back to the spec DSL and recompiling must not drop
+     or mutate a column (this is why phase is carried in the artifact, not discarded — a phased `A|G`
+     survives the round-trip). If a value cannot survive the round-trip, the artifact is missing a
+     field, not the spec.
+   - **Idempotency.** Compiling the same spec twice in a fixed compiler environment yields the same
+     `artifact.digest`; and every derivation/upgrade is a fixed point — `row.upgraded().upgraded()
+     == row.upgraded()`, and the read-time `effective_*` aliases return a set column unchanged. A
+     derivation must never oscillate or accumulate.
+
+   These are enforced by tests, not merely asserted here. (Cross-*version* byte-reproducibility is
+   still bounded by Principle 4: parquet is not deterministic across polars/arrow versions, so the
+   digest guarantee is *within* a fixed `compiler_version`.)
+
+8. **Requiredness is monotonic within a major (field-optionality compatibility).** Whether a field is
+   required is itself part of the contract and may only tighten, never loosen, inside an `N.x` line:
+   - A field that **any earlier version in the line made required stays required** — it is never
+     demoted to optional. Demoting it would let a newer module omit data an older consumer depends
+     on. (This is why 0.3 keeps `state` and the ClinVar booleans **required/authoritative** and adds
+     `direction`/`clin_sig` as *optional* orthogonal axes with derived fallbacks, rather than the
+     inverse the roadmap first sketched.)
+   - A **new** field may be introduced and even treated as required for freshly-authored specs, **but
+     only if existing data still validates** — i.e. it is optional/defaulted with respect to every
+     already-published module (which never set it), so nothing previously valid becomes invalid.
+   - The forbidden moves — demoting an existing required field to optional, promoting an existing
+     optional field to unconditionally-required, or retyping a field — are **breaking changes
+     reserved for the next major** (the requiredness rehaul), tracked in
+     [`ROADMAP.md`](ROADMAP.md)'s 1.0-cleanup list. Until then, all of the above holds.
+
+   In short: optionality tightens forward-only and never invalidates older data; loosening waits for
+   the major bump. This complements Principle 3 (additive within a major) by pinning the *requiredness*
+   axis specifically, because it was the axis most easily missed.
+
 ## Amendments
 
 This document is amended deliberately, never incidentally. `ROADMAP.md` holds plans and the

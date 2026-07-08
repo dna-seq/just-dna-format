@@ -15,6 +15,14 @@ from typing import Optional
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from just_dna_format.derive import (
+    benign_from_clin_sig,
+    clin_sig_from_booleans,
+    direction_from_state,
+    pathogenic_from_clin_sig,
+    stat_significance_from_state,
+    trimmed_state,
+)
 from just_dna_format.identity import validate_name
 from just_dna_format.manifest import SCHEMA_VERSION, Display, GenePanelSpec
 
@@ -206,6 +214,67 @@ class VariantRow(BaseModel):
         if self.rsid is not None:
             return self.rsid
         return f"{self.chrom}:{self.start}:{self.ref}"
+
+    # ── 0.3 read-time aliases + upgrade (ROADMAP item 1/6 + "Upgrade derivation"). ────────────────
+    # `state` and the ClinVar booleans stay REQUIRED/authoritative for 0.2 compat (CONSTITUTION
+    # Principle 3/8 — a required field is never demoted to optional inside a major). These accessors
+    # expose the orthogonal 0.3 axes even for a legacy row that set only `state`, by deriving when the
+    # new column is absent; `upgraded()` materializes those derivations for a re-publish. All are
+    # total and idempotent (CONSTITUTION Principle 7).
+    @property
+    def effective_direction(self) -> str:
+        """`direction` if set, else derived from the legacy `state` (+ `weight` sign)."""
+        return self.direction or direction_from_state(self.state, self.weight)
+
+    @property
+    def effective_stat_significance(self) -> str:
+        """`stat_significance` if set, else derived from the legacy `state`."""
+        return self.stat_significance or stat_significance_from_state(self.state)
+
+    @property
+    def effective_clin_sig(self) -> Optional[str]:
+        """`clin_sig` if set, else derived from the legacy ClinVar booleans (lossy)."""
+        return self.clin_sig or clin_sig_from_booleans(
+            self.pathogenic, self.benign, self.clinvar
+        )
+
+    @property
+    def effective_pathogenic(self) -> Optional[bool]:
+        """The authoritative `pathogenic` boolean, or the one implied by `clin_sig` when unset."""
+        if self.pathogenic is not None:
+            return self.pathogenic
+        return pathogenic_from_clin_sig(self.clin_sig)
+
+    @property
+    def effective_benign(self) -> Optional[bool]:
+        """The authoritative `benign` boolean, or the one implied by `clin_sig` when unset."""
+        if self.benign is not None:
+            return self.benign
+        return benign_from_clin_sig(self.clin_sig)
+
+    def upgraded(self) -> "VariantRow":
+        """A copy with the 0.3 axes back-populated from `state`/booleans and `state` trimmed to the
+        legacy set {protective, risk, neutral}. `state` stays present (never dropped inside a major)
+        but becomes a derived mirror of `direction`. Idempotent: ``r.upgraded().upgraded() ==
+        r.upgraded()``."""
+        direction = self.effective_direction
+        return self.model_copy(
+            update={
+                "direction": direction,
+                "stat_significance": self.effective_stat_significance,
+                "clin_sig": self.effective_clin_sig,
+                "pathogenic": self.effective_pathogenic,
+                "benign": self.effective_benign,
+                "state": trimmed_state(direction),
+            }
+        )
+
+    @property
+    def needs_upgrade(self) -> bool:
+        """True when a re-publish would materialize a 0.3 column that is currently derived-but-empty
+        (or would re-align the legacy `state`). Feeds the marketplace `revalidate`/`needs_upgrade`
+        contract-drift flow (which flags drifted-but-fixable modules for a new PATCH)."""
+        return self.upgraded() != self
 
     @field_validator("rsid")
     @classmethod

@@ -47,12 +47,14 @@ Items 1, 2, 3, 5, 6 are done; item 4 was decided as-is (no change). See CHANGELO
 
 ## Planned for 0.3
 
-**Design converged 2026-07-08; not built yet — this section is the exact brief for the next format
-run.** Everything here is **additive** — no `schema_version` bump (stays `"1.0"`), existing 0.1/0.2
-modules keep validating, and the new columns are back-populated from the old `state` field by the
-upgrade derivation below, fed into the marketplace `revalidate` / `needs_upgrade` contract-drift
-flow (which shipped in marketplace 0.5 — the format supplies the derivation function; the flow that
-flags drifted-but-fixable modules already exists).
+**Design converged 2026-07-08; the columns core + the upgrade derivation shipped in 0.3.0 (see
+CHANGELOG + [COMPILER.md](COMPILER.md) for exactly what landed vs. what stays deferred). This section
+remains the design brief.** Everything here is **additive** — no `schema_version` bump (stays
+`"1.0"`), existing 0.1/0.2 modules keep validating, and the new columns are back-populated from the
+old `state` field by the upgrade derivation below (`just_dna_format.derive` + `VariantRow.upgraded()`
+/ `effective_*` / `needs_upgrade`), fed into the marketplace `revalidate` / `needs_upgrade`
+contract-drift flow (which shipped in marketplace 0.5 — the format now supplies the derivation
+function; the flow that flags drifted-but-fixable modules already exists).
 
 0.3 untangles the overloaded `state` field into **orthogonal axes** and replaces the lossy ClinVar
 booleans with a proper `clin_sig` tier — all **additive columns on the existing `variants.csv` /
