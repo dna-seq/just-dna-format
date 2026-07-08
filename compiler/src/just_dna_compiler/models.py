@@ -14,6 +14,14 @@ class ValidationResult(BaseModel):
     valid: bool = Field(description="Whether the spec is valid")
     errors: list[str] = Field(default_factory=list, description="Validation errors")
     warnings: list[str] = Field(default_factory=list, description="Non-fatal warnings")
+    info: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Informational notes — neither errors nor warnings (nothing is wrong). Used to surface "
+            "accepted-but-noteworthy input, e.g. non-reserved `flags` tags (the flags vocabulary is "
+            "open, so an unknown tag is INFO, not a warning). See ROADMAP 0.3 item 4."
+        ),
+    )
     stats: dict[str, Any] = Field(
         default_factory=dict,
         description=(

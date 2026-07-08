@@ -185,7 +185,7 @@ wheels = [
 
 [[package]]
 name = "just-dna-compiler"
-version = "0.2.0"
+version = "0.3.0"
 source = { editable = "compiler" }
 dependencies = [
     { name = "duckdb" },
@@ -216,7 +216,7 @@ dev = [{ name = "pytest", specifier = ">=9.0.3" }]
 
 [[package]]
 name = "just-dna-format"
-version = "0.2.0"
+version = "0.3.0"
 source = { editable = "schema" }
 dependencies = [
     { name = "cryptography" },

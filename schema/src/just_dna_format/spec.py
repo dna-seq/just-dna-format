@@ -24,8 +24,51 @@ VALID_STATES: frozenset[str] = frozenset(
 VALID_CHROMOSOMES: frozenset[str] = frozenset(
     {str(i) for i in range(1, 23)} | {"X", "Y", "MT"}
 )
+
+# ── 0.3 additive vocabularies (see docs/ROADMAP.md "Planned for 0.3") ───────────
+# Effect direction — the clean scalar split out of `state`. `state` stays as the legacy
+# (required) field; `direction` is the orthogonal, optional axis.
+VALID_DIRECTIONS: frozenset[str] = frozenset({"protective", "risk", "neutral", "unknown"})
+# Graduated statistical significance — named `stat_significance` (NOT `significance`, which is the
+# clinical axis: GenePanelSpec.significance / clin_sig).
+VALID_SIGNIFICANCE: frozenset[str] = frozenset(
+    {"significant", "suggestive", "not_significant", "unknown"}
+)
+# ClinVar / ACMG clinical significance (VEP `CLIN_SIG` vocabulary). Distinct from `direction`.
+VALID_CLIN_SIG: frozenset[str] = frozenset(
+    {
+        "pathogenic",
+        "likely_pathogenic",
+        "uncertain_significance",
+        "likely_benign",
+        "benign",
+        "drug_response",
+        "association",
+        "risk_factor",
+        "protective",
+        "affects",
+        "conflicting",
+        "not_provided",
+        "other",
+    }
+)
+# `flags` is an OPEN list. These are the reserved tags the tooling acts on; any other tag is
+# accepted and surfaced as INFO (not a warning) by the compiler. Never put direction / clinical
+# / consequence / drug words here — those have (or get) typed columns.
+RESERVED_FLAGS: frozenset[str] = frozenset({"conditional", "phased", "pleiotropic"})
+# `effect_measure` is intentionally NOT a closed vocabulary (kept permissive so PGS-Catalog
+# `weight_type` additions survive). These are the recommended values, for documentation only.
+RECOMMENDED_EFFECT_MEASURES: frozenset[str] = frozenset(
+    {"OR", "HR", "RR", "beta", "log(OR)", "log(HR)", "NR"}
+)
+
 RSID_PATTERN: re.Pattern[str] = re.compile(r"^rs\d+$")
 ALLELE_PATTERN: re.Pattern[str] = re.compile(r"^[ACGT]+$", re.IGNORECASE)
+# EFO/MONDO/OBA/HP-style ontology CURIE, e.g. EFO_0001645 or MONDO:0005265 (matches just-prs's
+# `trait_efo_id`). Multiple ids may be given, comma/semicolon/pipe-separated.
+TRAIT_ID_PATTERN: re.Pattern[str] = re.compile(r"^[A-Za-z][A-Za-z]*[:_]\w+$")
+# Separators accepted inside a multi-valued CSV cell (`flags`, `trait_efo_id`).
+_MULTI_SEP: re.Pattern[str] = re.compile(r"[,;|]")
 # A PMID is a run of digits. Real sources present them bare (`9545397`), bracketed/prefixed
 # (`[PMID: 9545397]`), or as a `;`-joined list (`PMID 17478681; PMID: 30278588`). We accept any
 # string that carries at least one PMID token and keep it verbatim (ROADMAP item 6 / Obs #4).
@@ -121,6 +164,42 @@ class VariantRow(BaseModel):
     curator: Optional[str] = Field(default=None, description="Curator override")
     method: Optional[str] = Field(default=None, description="Annotation method override")
 
+    # ── 0.3 additive columns (all optional; see docs/ROADMAP.md "Planned for 0.3") ──
+    direction: Optional[str] = Field(
+        default=None,
+        description="Effect direction: one of protective|risk|neutral|unknown. Orthogonal to `state`.",
+    )
+    stat_significance: Optional[str] = Field(
+        default=None,
+        description="Statistical significance: significant|suggestive|not_significant|unknown.",
+    )
+    effect_size: Optional[float] = Field(
+        default=None, description="Published effect magnitude (unit given by `effect_measure`)."
+    )
+    effect_measure: Optional[str] = Field(
+        default=None,
+        description="Unit of `effect_size`, e.g. OR|HR|beta|RR (recommended; not a closed set).",
+    )
+    effect_allele: Optional[str] = Field(
+        default=None,
+        description="The allele that `direction`/`weight`/`effect_size` refer to (nucleotides).",
+    )
+    flags: Optional[list[str]] = Field(
+        default=None,
+        description=(
+            "Open, multi-valued tag list (CSV: comma/semicolon/pipe-separated). Reserved tags the "
+            "tooling acts on: conditional|phased|pleiotropic; other tags are allowed (surfaced as INFO)."
+        ),
+    )
+    trait_efo_id: Optional[str] = Field(
+        default=None,
+        description="EFO/MONDO/OBA/HP trait ontology id(s), e.g. EFO_0001645 (matches just-prs).",
+    )
+    clin_sig: Optional[str] = Field(
+        default=None,
+        description="ClinVar/ACMG clinical significance (VEP CLIN_SIG vocabulary).",
+    )
+
     @property
     def variant_key(self) -> str:
         """Stable grouping key: rsid when available, else chrom:start:ref."""
@@ -157,19 +236,106 @@ class VariantRow(BaseModel):
     @field_validator("genotype")
     @classmethod
     def _validate_genotype(cls, v: str) -> str:
-        parts = v.split("/")
-        if len(parts) != 2:
-            raise ValueError(f"genotype must be two alleles slash-separated (e.g. A/G), got: {v!r}")
-        for allele in parts:
-            if not ALLELE_PATTERN.match(allele):
+        # Phased (order-significant): pipe-separated, exactly two alleles, NOT sorted — phase encodes
+        # which allele sits on which homolog. ROADMAP 0.3 item 5b.
+        if "|" in v:
+            parts = v.split("|")
+            if len(parts) != 2:
                 raise ValueError(
-                    f"genotype alleles must be uppercase nucleotides, got: {allele!r} in {v!r}"
+                    f"phased genotype must be two pipe-separated alleles (e.g. A|G), got: {v!r}"
                 )
-        if parts != sorted(parts):
+            for allele in parts:
+                if not ALLELE_PATTERN.match(allele):
+                    raise ValueError(
+                        f"genotype alleles must be nucleotides, got: {allele!r} in {v!r}"
+                    )
+            return v
+        parts = v.split("/")
+        if len(parts) == 1:
+            # Hemizygous single allele (non-PAR X/Y in males; homoplasmic MT). ROADMAP 0.3 item 5b.
+            if not ALLELE_PATTERN.match(parts[0]):
+                raise ValueError(f"genotype allele must be nucleotides, got: {v!r}")
+            return v
+        if len(parts) == 2:
+            for allele in parts:
+                if not ALLELE_PATTERN.match(allele):
+                    raise ValueError(
+                        f"genotype alleles must be nucleotides, got: {allele!r} in {v!r}"
+                    )
+            if parts != sorted(parts):
+                raise ValueError(
+                    f"unphased genotype alleles must be alphabetically sorted: "
+                    f"expected {'/'.join(sorted(parts))!r}, got: {v!r}"
+                )
+            return v
+        raise ValueError(
+            f"genotype must be a single allele (hemizygous, e.g. A), two sorted slash-separated "
+            f"alleles (A/G), or two pipe-separated phased alleles (A|G), got: {v!r}"
+        )
+
+    @field_validator("direction")
+    @classmethod
+    def _validate_direction(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None and v not in VALID_DIRECTIONS:
+            raise ValueError(f"direction must be one of {sorted(VALID_DIRECTIONS)}, got: {v!r}")
+        return v
+
+    @field_validator("stat_significance")
+    @classmethod
+    def _validate_stat_significance(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None and v not in VALID_SIGNIFICANCE:
             raise ValueError(
-                f"genotype alleles must be alphabetically sorted: "
-                f"expected {'/'.join(sorted(parts))!r}, got: {v!r}"
+                f"stat_significance must be one of {sorted(VALID_SIGNIFICANCE)}, got: {v!r}"
             )
+        return v
+
+    @field_validator("clin_sig")
+    @classmethod
+    def _validate_clin_sig(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None and v not in VALID_CLIN_SIG:
+            raise ValueError(f"clin_sig must be one of {sorted(VALID_CLIN_SIG)}, got: {v!r}")
+        return v
+
+    @field_validator("effect_allele")
+    @classmethod
+    def _validate_effect_allele(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None and not ALLELE_PATTERN.match(v):
+            raise ValueError(f"effect_allele must be nucleotides (e.g. A, G, AC), got: {v!r}")
+        return v
+
+    @field_validator("flags", mode="before")
+    @classmethod
+    def _split_flags(cls, v: object) -> object:
+        # A CSV cell arrives as a string; split it into a list. Programmatic construction may pass a
+        # list already. The vocabulary is OPEN — unknown tags are accepted (the compiler surfaces
+        # them as INFO), so nothing is rejected here beyond emptiness.
+        if isinstance(v, str):
+            tags = [t.strip() for t in _MULTI_SEP.split(v) if t.strip()]
+            return tags or None
+        return v
+
+    @field_validator("flags")
+    @classmethod
+    def _validate_flags(cls, v: Optional[list[str]]) -> Optional[list[str]]:
+        if v is None:
+            return v
+        for tag in v:
+            if not isinstance(tag, str) or not tag.strip():
+                raise ValueError(f"flags entries must be non-empty strings, got: {v!r}")
+        return v
+
+    @field_validator("trait_efo_id")
+    @classmethod
+    def _validate_trait_efo_id(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return v
+        for tok in _MULTI_SEP.split(v):
+            tok = tok.strip()
+            if tok and not TRAIT_ID_PATTERN.match(tok):
+                raise ValueError(
+                    f"trait_efo_id tokens must be ontology CURIEs like EFO_0001645 / "
+                    f"MONDO:0005265, got: {tok!r}"
+                )
         return v
 
     @model_validator(mode="after")
@@ -204,9 +370,24 @@ class StudyRow(BaseModel):
     ref: Optional[str] = Field(default=None, description="Reference allele (position-only variants)")
     pmid: str = Field(description="PubMed ID or reference — free-form, must be non-empty")
     population: Optional[str] = Field(default=None, description="Study population")
-    p_value: Optional[str] = Field(default=None, description="Statistical significance")
+    p_value: Optional[str] = Field(default=None, description="Raw p-value string (free-form)")
     conclusion: Optional[str] = Field(default=None, description="Study-specific conclusion")
     study_design: Optional[str] = Field(default=None, description="e.g. meta-analysis, GWAS")
+
+    # ── 0.3 additive columns (per-study evidence; see docs/ROADMAP.md "Planned for 0.3") ──
+    stat_significance: Optional[str] = Field(
+        default=None,
+        description="Per-study statistical significance: significant|suggestive|not_significant|unknown.",
+    )
+    effect_size: Optional[float] = Field(
+        default=None, description="Per-study effect magnitude (unit given by `effect_measure`)."
+    )
+    effect_measure: Optional[str] = Field(
+        default=None, description="Unit of `effect_size`, e.g. OR|HR|beta|RR (recommended, open)."
+    )
+    trait_efo_id: Optional[str] = Field(
+        default=None, description="EFO/MONDO/OBA/HP trait ontology id(s) for this study."
+    )
 
     @property
     def variant_key(self) -> str:
@@ -214,6 +395,29 @@ class StudyRow(BaseModel):
         if self.rsid is not None:
             return self.rsid
         return f"{self.chrom}:{self.start}:{self.ref}"
+
+    @field_validator("stat_significance")
+    @classmethod
+    def _validate_stat_significance(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None and v not in VALID_SIGNIFICANCE:
+            raise ValueError(
+                f"stat_significance must be one of {sorted(VALID_SIGNIFICANCE)}, got: {v!r}"
+            )
+        return v
+
+    @field_validator("trait_efo_id")
+    @classmethod
+    def _validate_trait_efo_id(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return v
+        for tok in _MULTI_SEP.split(v):
+            tok = tok.strip()
+            if tok and not TRAIT_ID_PATTERN.match(tok):
+                raise ValueError(
+                    f"trait_efo_id tokens must be ontology CURIEs like EFO_0001645 / "
+                    f"MONDO:0005265, got: {tok!r}"
+                )
+        return v
 
     @field_validator("rsid")
     @classmethod

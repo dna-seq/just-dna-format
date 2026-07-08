@@ -5,6 +5,32 @@ Shared change log for the just-dna module format/compiler ecosystem. Because
 **just-dna-marketplace**, and **just-dna-agents**, cross-repo integration changes are recorded
 here so parallel work in the other repos isn't surprised. Newest first.
 
+## 2026-07-08 — just-dna-format 0.3.0 + just-dna-compiler 0.3.0
+
+Additive schema + partial compiler coverage for the 0.3 columns. **`schema_version` stays `"1.0"`** —
+every 0.1/0.2 module keeps validating; all new columns are optional. Design captured in
+`docs/ROADMAP.md` (Planned for 0.3 / 0.4), invariants in `docs/CONSTITUTION.md`, worked drafts in
+`docs/REFERENCE_EXAMPLES.md`, and the compiler coverage split in `docs/COMPILER.md`.
+
+- **New optional columns.** `VariantRow`: `direction` (protective|risk|neutral|unknown),
+  `stat_significance` (significant|suggestive|not_significant|unknown), `effect_size` +
+  `effect_measure` (open vocab), `effect_allele`, `flags` (open list; reserved:
+  conditional|phased|pleiotropic), `trait_efo_id` (EFO/MONDO CURIEs, matches just-prs), `clin_sig`
+  (ClinVar/ACMG vocab). `StudyRow`: `stat_significance`, `effect_size`, `effect_measure`,
+  `trait_efo_id`.
+- **Genotype widened** to accept a single allele (hemizygous X/Y, homoplasmic MT) and a phased `A|G`
+  (order-preserved), alongside the existing sorted unphased `A/G`.
+- **Compiler — validator complete, some computed items intentionally deferred** (see
+  `docs/COMPILER.md`). New columns materialize into `weights.parquet`/`studies.parquet`; non-reserved
+  `flags` surface as INFO via the new `ValidationResult.info`; warnings for a two-allele `MT`
+  genotype and a `direction`/`weight` sign mismatch. Deferred (computed): `state→direction`/`clin_sig`
+  derivations, phase preservation in the artifact, new stats — and all of 0.4
+  (diplotype/copy-number/PGx star-alleles).
+- **Digest note:** the parquet schema now carries the 0.3 columns, so a re-compile changes
+  `artifact.digest` for every module (expected on a compiler-version bump; reproducibility pinned by
+  `compiler_version`, published versions keep their old digest until re-published).
+- Tests: `compiler/tests/test_v03.py` (30 new); suite 134 passed / 5 skipped.
+
 ## 2026-07-07 — just-dna-format 0.2.0 + just-dna-compiler 0.2.0
 
 First contract release since 0.1.0. **Every change is additive and backwards-compatible**: the

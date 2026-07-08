@@ -28,3 +28,17 @@ uv run pytest        # runs schema/ and compiler/ test suites
 ```
 
 Build both distributions: `uv build --all-packages`.
+
+## Design docs
+
+- [`docs/CONSTITUTION.md`](docs/CONSTITUTION.md) — the durable charter: goals, non-goals, and the
+  invariants every release upholds (declarative-not-code, no-network, backward-compat-within-a-major,
+  integrity). Amended only deliberately.
+- [`docs/ROADMAP.md`](docs/ROADMAP.md) — what shipped and what's planned (including the 0.3 schema
+  brief and the 1.0-cleanup tracker). Revised often.
+- [`docs/CHANGELOG.md`](docs/CHANGELOG.md) — release history.
+- [`docs/COMPILER.md`](docs/COMPILER.md) — how much of the 0.3 schema the compiler covers: the
+  validator is complete, some computed items are intentionally deferred (a partial-conformance table).
+- [`docs/REFERENCE_EXAMPLES.md`](docs/REFERENCE_EXAMPLES.md) — illustrative worked module drafts
+  (simple SNV, APOE diplotype, G6PD hemizygous, SMN1 copy-number, CYP2D6 star-alleles). Ideas/drafts
+  for authors and consumers, **not** a shipped contract.

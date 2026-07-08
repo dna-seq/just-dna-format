@@ -11,6 +11,7 @@ The DSL/manifest schema comes from `just-dna-format`; this package is the transf
 """
 
 import csv
+import re
 import shutil
 from datetime import datetime, timezone
 from importlib.metadata import PackageNotFoundError, version
@@ -32,10 +33,21 @@ from just_dna_format.manifest import (
     Stats,
     write_manifest,
 )
-from just_dna_format.spec import ModuleSpecConfig, StudyRow, VariantRow
+from just_dna_format.spec import RESERVED_FLAGS, ModuleSpecConfig, StudyRow, VariantRow
 from pydantic import ValidationError
 
 from just_dna_compiler.models import CompilationResult, ValidationResult
+
+# Genotype allele separators: `/` (unphased), `|` (phased). See ROADMAP 0.3 item 5b. Splitting on
+# both yields the allele list; phase (the `|` vs `/` distinction) is NOT preserved in the artifact —
+# that is an intentionally-deferred computed item (see docs/COMPILER.md).
+_GENOTYPE_SEP: re.Pattern[str] = re.compile(r"[/|]")
+
+
+def _split_genotype(genotype: str) -> list[str]:
+    """Split a genotype string into its alleles, accepting single-allele (hemizygous),
+    slash-separated (unphased), and pipe-separated (phased) forms."""
+    return [allele for allele in _GENOTYPE_SEP.split(genotype) if allele]
 
 _INPUT_FILES: tuple[str, ...] = ("module_spec.yaml", "variants.csv", "studies.csv")
 _OUTPUT_FILES: tuple[str, ...] = ("weights.parquet", "annotations.parquet", "studies.parquet")
@@ -227,15 +239,30 @@ def _cross_validate_variants(variants: list[VariantRow]) -> tuple[list[str], lis
         seen_keys.add(key)
 
     for row in variants:
-        if row.weight is None:
-            continue
-        if row.state == "risk" and row.weight > 0:
+        # `state`/`weight` sign consistency (legacy), plus the same check on the new `direction`.
+        if row.weight is not None:
+            if row.state == "risk" and row.weight > 0:
+                warnings.append(
+                    f"{row.variant_key} genotype {row.genotype}: state='risk' but weight={row.weight} > 0"
+                )
+            if row.state == "protective" and row.weight < 0:
+                warnings.append(
+                    f"{row.variant_key} genotype {row.genotype}: state='protective' but weight={row.weight} < 0"
+                )
+            if row.direction == "risk" and row.weight > 0:
+                warnings.append(
+                    f"{row.variant_key} genotype {row.genotype}: direction='risk' but weight={row.weight} > 0"
+                )
+            if row.direction == "protective" and row.weight < 0:
+                warnings.append(
+                    f"{row.variant_key} genotype {row.genotype}: direction='protective' but weight={row.weight} < 0"
+                )
+        # Non-diploid guardrail (ROADMAP 0.3 item 5b): MT is not diploid, so a two-allele genotype is
+        # almost certainly wrong — a homoplasmic MT call is a single allele (e.g. 'G').
+        if row.chrom == "MT" and ("/" in row.genotype or "|" in row.genotype):
             warnings.append(
-                f"{row.variant_key} genotype {row.genotype}: state='risk' but weight={row.weight} > 0"
-            )
-        if row.state == "protective" and row.weight < 0:
-            warnings.append(
-                f"{row.variant_key} genotype {row.genotype}: state='protective' but weight={row.weight} < 0"
+                f"{row.variant_key} genotype {row.genotype}: chrom=MT is not diploid — use a "
+                f"single-allele genotype (e.g. 'G') for a homoplasmic MT call"
             )
     return errors, warnings
 
@@ -271,6 +298,7 @@ def validate_spec(spec_dir: Path) -> ValidationResult:
     spec_dir = Path(spec_dir)
     all_errors: list[str] = []
     all_warnings: list[str] = []
+    all_info: list[str] = []
 
     if not spec_dir.is_dir():
         return ValidationResult(valid=False, errors=[f"Spec directory does not exist: {spec_dir}"])
@@ -309,6 +337,16 @@ def validate_spec(spec_dir: Path) -> ValidationResult:
         if studies:
             _, study_warnings = _cross_validate_studies(studies, variant_keys)
             all_warnings.extend(study_warnings)
+        # `flags` is an open vocabulary — surface non-reserved tags as INFO (not a warning; nothing
+        # is wrong). ROADMAP 0.3 item 4.
+        unknown_flags = sorted(
+            {tag for v in variants if v.flags for tag in v.flags if tag not in RESERVED_FLAGS}
+        )
+        if unknown_flags:
+            all_info.append(
+                f"Non-reserved flags in use (allowed; reserved tags are "
+                f"{sorted(RESERVED_FLAGS)}): {unknown_flags}"
+            )
 
     stats: dict[str, Any] = {}
     if variants:
@@ -331,7 +369,11 @@ def validate_spec(spec_dir: Path) -> ValidationResult:
             stats["module_name"] = config.module.name
 
     return ValidationResult(
-        valid=len(all_errors) == 0, errors=all_errors, warnings=all_warnings, stats=stats
+        valid=len(all_errors) == 0,
+        errors=all_errors,
+        warnings=all_warnings,
+        info=all_info,
+        stats=stats,
     )
 
 
@@ -505,7 +547,7 @@ def _build_weights(variants: list[VariantRow], config: ModuleSpecConfig) -> pl.D
         records.append(
             {
                 "rsid": v.rsid,
-                "genotype": v.genotype.split("/"),
+                "genotype": _split_genotype(v.genotype),
                 "module": module_name,
                 "weight": v.weight,
                 "state": v.state,
@@ -524,6 +566,16 @@ def _build_weights(variants: list[VariantRow], config: ModuleSpecConfig) -> pl.D
                 "benign": v.benign if v.benign is not None else False,
                 "likely_pathogenic": False,
                 "likely_benign": False,
+                # ── 0.3 additive columns (materialized passthrough; derivations are NOT computed
+                # here — see docs/COMPILER.md). ──
+                "direction": v.direction,
+                "stat_significance": v.stat_significance,
+                "effect_size": v.effect_size,
+                "effect_measure": v.effect_measure,
+                "effect_allele": v.effect_allele,
+                "flags": v.flags,
+                "trait_efo_id": v.trait_efo_id,
+                "clin_sig": v.clin_sig,
             }
         )
     schema = {
@@ -547,6 +599,14 @@ def _build_weights(variants: list[VariantRow], config: ModuleSpecConfig) -> pl.D
         "benign": pl.Boolean,
         "likely_pathogenic": pl.Boolean,
         "likely_benign": pl.Boolean,
+        "direction": pl.Utf8,
+        "stat_significance": pl.Utf8,
+        "effect_size": pl.Float64,
+        "effect_measure": pl.Utf8,
+        "effect_allele": pl.Utf8,
+        "flags": pl.List(pl.Utf8),
+        "trait_efo_id": pl.Utf8,
+        "clin_sig": pl.Utf8,
     }
     return pl.DataFrame(records, schema=schema)
 
@@ -591,6 +651,11 @@ def _build_studies(studies: list[StudyRow], module_name: str) -> pl.DataFrame:
                 "p_value": s.p_value,
                 "conclusion": s.conclusion,
                 "study_design": s.study_design,
+                # ── 0.3 additive columns (materialized passthrough). ──
+                "stat_significance": s.stat_significance,
+                "effect_size": s.effect_size,
+                "effect_measure": s.effect_measure,
+                "trait_efo_id": s.trait_efo_id,
             }
         )
     schema = {
@@ -601,6 +666,10 @@ def _build_studies(studies: list[StudyRow], module_name: str) -> pl.DataFrame:
         "p_value": pl.Utf8,
         "conclusion": pl.Utf8,
         "study_design": pl.Utf8,
+        "stat_significance": pl.Utf8,
+        "effect_size": pl.Float64,
+        "effect_measure": pl.Utf8,
+        "trait_efo_id": pl.Utf8,
     }
     return pl.DataFrame(records, schema=schema)
 
@@ -706,6 +775,9 @@ def _write_variants_csv(
         "rsid", "chrom", "start", "ref", "alts", "genotype", "weight", "state", "conclusion",
         "negatives", "priority", "gene", "phenotype", "category", "clinvar", "pathogenic", "benign",
         "curator", "method",
+        # 0.3 additive columns
+        "direction", "stat_significance", "effect_size", "effect_measure", "effect_allele",
+        "flags", "trait_efo_id", "clin_sig",
     ]
     with open(output_path, "w", encoding="utf-8", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
@@ -721,6 +793,14 @@ def _write_variants_csv(
             clinvar = row.get("clinvar", False)
             pathogenic = row.get("pathogenic", False)
             benign = row.get("benign", False)
+            # Genotype is stored as an allele list; phase (pipe) is not preserved (deferred computed
+            # item — see docs/COMPILER.md). A two-allele genotype is re-emitted sorted/unphased.
+            if genotype_list and len(genotype_list) == 2:
+                genotype_str = "/".join(sorted(genotype_list))
+            else:
+                genotype_str = "/".join(genotype_list) if genotype_list else ""
+            flags_list = row.get("flags")
+            effect_size = row.get("effect_size")
             writer.writerow(
                 {
                     "rsid": rsid,
@@ -728,7 +808,7 @@ def _write_variants_csv(
                     "start": row.get("start", ""),
                     "ref": row.get("ref", ""),
                     "alts": ",".join(alts_list) if alts_list else "",
-                    "genotype": "/".join(genotype_list) if genotype_list else "",
+                    "genotype": genotype_str,
                     "weight": row.get("weight") if row.get("weight") is not None else "",
                     "state": row.get("state", ""),
                     "conclusion": row.get("conclusion", ""),
@@ -742,13 +822,25 @@ def _write_variants_csv(
                     "benign": str(benign).lower() if benign else "",
                     "curator": curator if curator != default_curator else "",
                     "method": method if method != default_method else "",
+                    "direction": row.get("direction") or "",
+                    "stat_significance": row.get("stat_significance") or "",
+                    "effect_size": effect_size if effect_size is not None else "",
+                    "effect_measure": row.get("effect_measure") or "",
+                    "effect_allele": row.get("effect_allele") or "",
+                    "flags": "|".join(flags_list) if flags_list else "",
+                    "trait_efo_id": row.get("trait_efo_id") or "",
+                    "clin_sig": row.get("clin_sig") or "",
                 }
             )
 
 
 def _write_studies_csv(studies_df: pl.DataFrame, output_path: Path) -> None:
     """Write studies.csv from studies parquet."""
-    fieldnames = ["rsid", "pmid", "population", "p_value", "conclusion", "study_design"]
+    fieldnames = [
+        "rsid", "pmid", "population", "p_value", "conclusion", "study_design",
+        # 0.3 additive columns
+        "stat_significance", "effect_size", "effect_measure", "trait_efo_id",
+    ]
     with open(output_path, "w", encoding="utf-8", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
@@ -756,6 +848,7 @@ def _write_studies_csv(studies_df: pl.DataFrame, output_path: Path) -> None:
             pmid = row.get("pmid")
             if pmid is None or str(pmid).strip() == "":
                 continue
+            effect_size = row.get("effect_size")
             writer.writerow(
                 {
                     "rsid": row["rsid"],
@@ -764,5 +857,9 @@ def _write_studies_csv(studies_df: pl.DataFrame, output_path: Path) -> None:
                     "p_value": row.get("p_value") or "",
                     "conclusion": row.get("conclusion") or "",
                     "study_design": row.get("study_design") or "",
+                    "stat_significance": row.get("stat_significance") or "",
+                    "effect_size": effect_size if effect_size is not None else "",
+                    "effect_measure": row.get("effect_measure") or "",
+                    "trait_efo_id": row.get("trait_efo_id") or "",
                 }
             )
