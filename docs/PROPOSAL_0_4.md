@@ -69,8 +69,9 @@ direction, clin_sig, phenotype, trait_efo_id, conclusion, unresolved
 
 - `measure_kind ∈ {activity_score, copy_number, repeat_count, allele_fraction, prs_percentile}` —
   open, additive `frozenset[str]` (Principle 6).
-- `measure_min` / `measure_max` — half-open range `[min, max)`; either bound nullable for
-  open-ended bins (`≥40 CAG` = `min=40, max=null`).
+- `measure_min` / `measure_max` — **inclusive range `[min, max]`** (`min == max` = a sharp value,
+  e.g. exactly 0 copies); either bound nullable for open-ended bins (`≥40 CAG` = `min=40, max=null`).
+  There is no separate `copy_number` column. *(Resolved by the sample implementation — see Findings.)*
 - `direction` / `clin_sig` / `trait_efo_id` — the same orthogonal axes a `VariantRow` carries.
 - **`unresolved` (T1) is mandatory.** A binning table MUST be able to state the outcome for
   *measurement absent / not callable*, and the **consumer contract is: a missing measurement selects
@@ -98,11 +99,11 @@ grounds (not a Constitution invariant, but firm). This is why B4's modifier is t
 
 **Open questions to the consumer:**
 
-- Is `[min, max)` half-open the convention your callers expect, or do you bin inclusively on both
-  ends? (HTT `36–39` vs `≥40` boundary handling is the concrete case.)
-- Do you want `unresolved` as a **boolean flag on a sentinel row** (one row per table marked
-  `unresolved=true`, no range) or as an **enum value the consumer resolves to** when no bin matches?
-  We lean sentinel-row; confirm against how your callers emit `METHOD_BLIND_SPOT` / `CI` / `NO_CALL`.
+- ~~Half-open vs inclusive~~ **resolved: inclusive `[min, max]`**, `min == max` = sharp value
+  (see Findings). Confirm this matches your callers' boundary handling (HTT `36–39` vs `≥40`).
+- `unresolved` is implemented as a **sentinel row** (`unresolved=true`, no range), not an enum — the
+  row a consumer selects when no measurement is available. Confirm against how your callers emit
+  `METHOD_BLIND_SPOT` / `CI` / `NO_CALL`.
 
 ---
 
@@ -313,7 +314,8 @@ reproductive}` and whether ACMG-SF membership is a *value* in this axis or a sep
 
 The freeze waits on these answers (all flagged inline above):
 
-1. Binning range convention — half-open `[min,max)` vs inclusive; `unresolved` sentinel-row vs enum.
+1. ~~Binning range convention — half-open `[min,max)` vs inclusive~~ **→ resolved by the sample:
+   inclusive `[min,max]`, `min == max` = sharp value, `unresolved` = a sentinel row (see Findings).**
 2. Provenance triple — three columns vs one composite string.
 3. `reference_sequence` — validated accession vocabulary vs free-form + warning.
 4. `requires_callable` — reserved flag vs typed boolean column.
@@ -323,3 +325,47 @@ The freeze waits on these answers (all flagged inline above):
 8. `pgs.csv` — `training_ancestry` vocabulary; `match_rate` author-floor vs consumer-observed vs both;
    `research_tier` boolean vs vocabulary.
 9. `actionability` — seed vocabulary; ACMG-SF as value vs separate `acmg_sf` flag.
+
+---
+
+## Findings from the sample implementation (feeds round-2)
+
+A schema-only sample implementation of the 0.4 tables now lives in
+`just_dna_format.{vocab,binning,pgx,pgs}` (validated by `schema/tests/test_v04.py`); the compiler
+materialization is deliberately deferred until the shapes freeze (rewriting the parquet/round-trip
+path mid-ping-pong would be wasted). Building the models surfaced five things:
+
+1. **The drafted tables were not actually column-aligned.** `copynumbers.csv` used a bespoke
+   `copy_number` column while `repeat_alleles.csv` used `measure_min`/`measure_max` — so B0's "one
+   consumer code path" was not real on paper. **Resolved:** every binning table uses one uniform,
+   **inclusive** `measure_min`/`measure_max` (`min == max` = a sharp value like exactly 0 copies,
+   `min < max` = a range, empty `measure_max` = open-ended). There is **no `copy_number` column** —
+   authored or compiled; recovering an integer is a single read of `measure_min`, not worth a
+   precomputed column. This resolves round-2 Q1 (inclusive, not half-open).
+2. **`unresolved` (T1) is a sentinel row with null bounds**, not an enum value — a row with
+   `unresolved=true` carries no `measure_min`/`measure_max` and is the result a consumer selects when
+   the measurement is absent. Enforced by a validator (a resolved bin needs a bound; a sentinel must
+   not carry one). This is the second half of round-2 Q1.
+3. **`pgs.csv` is not a binning table.** Its frozen shape is a PGS-Catalog-ID *manifest*
+   (`pgs_id, trait_efo_id, note, group, training_ancestry, match_rate, research_tier`), modeled as a
+   declared interface like `GenePanelSpec` — not a `measure→phenotype` bin. It keeps the ancestry
+   validity fields (B5) but does not share the binning vocabulary.
+4. **`measure_kind` is implemented as a closed-validated `frozenset`** (like `direction`/`clin_sig`),
+   additive across releases. Round-2: confirm closed-validated is wanted, vs open-passthrough like
+   `effect_measure`/`flags`.
+5. **The reserved namespace is enforced structurally.** Every 0.4 model sets
+   `model_config = ConfigDict(extra="forbid")`, so a column named for a reserved-but-not-built field
+   (`caller`, `caller_version`, `reference_db`, `requires_callable`, `actionability`, `acmg_sf`) is
+   rejected until a release claims it. `reference_sequence` (heteroplasmy key) and `suballele`
+   (allele_function) are **built**, so they are not reserved.
+
+**Data-agnostic — recorded in `CLAUDE.md`, deliberately not the Constitution.** The conflation that
+produced finding (1)'s "copy_number as a measured value" — made independently in the field notes and
+this proposal's first draft — shows the guidance is not self-evident and is worth writing down: *a
+module and its compiled artifact contain only the annotation (lookup tables and bounded rules), never
+sample data, a genotype under test, or a measured value; the measurement is supplied by the consumer
+at query time.* It is stated as a **north star, not a charter invariant**, because the schemas are a
+generalization over a practical subset of real data items (an implicit data model with an untracked
+empirical footprint), not an all-encompassing model — claiming otherwise would be presumptuous. The
+sample's models are all written to it (they carry ranges, never measurements), and a data item that
+doesn't fit is a schema gap to widen additively.

@@ -40,8 +40,24 @@ form of those.
 2. **`effect_allele` strand/ref reconciliation.** The column is validated (nucleotides) and passed
    through; the compiler does not reconcile it against `ref`/`alts` or normalize strand. The `+`
    strand / `genome_build` assumption is documentation, not an enforced computation.
-3. **All of 0.4** — diplotype/haplotype, copy-number, PGx activity scores — is out of scope here (new
-   file kinds, consumer-gated).
+3. **0.4 materialization** — the diplotype/haplotype, copy-number, repeat, heteroplasmy, activity,
+   and PGS tables are **modeled and schema-validated** in `just_dna_format.{binning,pgx,pgs}` (a
+   sample implementation; see `schema/tests/test_v04.py` and `docs/REFERENCE_EXAMPLES.md`), but the
+   compiler does **not** yet materialize them into parquet — deferred until the shapes freeze after
+   round-2 (rebuilding the parquet/round-trip path mid-ping-pong would be wasted). The integration
+   points are known and small: add each parquet name to `_OUTPUT_FILES` (which alone wires
+   `artifact.digest`), a `_build_binning()`-style builder per the `_build_weights` records+schema
+   pattern, source CSVs in `_INPUT_FILES`, and a reverse `_write_*_csv` path in `reverse_module`.
+   Because none of that is built yet, **`artifact.digest` is unchanged by the 0.4 sample.**
+
+## 0.4 schema coverage (sample — validated, not yet materialized)
+
+| 0.4 kind (model) | Validated | Materialized (→ parquet) | Status |
+|---|---|---|---|
+| binning primitive `MeasureBinRow` + `Activity/CopyNumber/RepeatAllele/Heteroplasmy` rows | ✅ shared vocab, inclusive `[min,max]`, mandatory `unresolved`, `extra=forbid` | ⛔ deferred | schema sample |
+| PGx `HaplotypeRow` / `AlleleFunctionRow` (star-string verbatim) / `DiplotypeRow` (canonical pair) | ✅ | ⛔ deferred | schema sample |
+| PGS `PgsRow` (declared interface; ancestry-validity fields) | ✅ `PGS<digits>`, ancestry/tier vocab, `match_rate∈[0,1]` | ⛔ deferred | schema sample |
+| reserved namespace (`caller*`, `requires_callable`, `actionability`, `acmg_sf`) | ✅ rejected via `extra=forbid` until built | — | reserved |
 
 ## Upgrade derivation (`state`/booleans → 0.3 axes)
 

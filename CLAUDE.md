@@ -28,6 +28,17 @@ live in `just-dna-pipelines` / `just-dna-lite` / `just-dna-marketplace`.
   the compiler's polars/duckdb stay in `just-dna-compiler`. Never pull Dagster / LLM SDKs / HF.
 - **No network, inject-only** (Principle 2): the resolver never downloads; the caller injects any
   reference.
+- **Data-agnostic — a north star, not a totality claim.** A module and its compiled artifact are
+  pure *annotation*: lookup tables and bounded rules mapping a quantity/genotype to a phenotype. They
+  carry **no sample data, no genotype under test, no measured value** — the measurement is supplied by
+  the consumer at query time (the format supplies the table; the consumer supplies the call). *But*
+  the pydantic schemas are a **generalization over a practical subset** of real data items — concrete
+  loci, callers, and realistic value ranges — i.e. an implicit data model with an untracked empirical
+  footprint, not an all-encompassing universal one. Be explicit that a shape generalizes known cases
+  rather than pretending it covers everything: when a real data item doesn't fit, that is a schema gap
+  to widen *additively*, not a consumer error. (This is why `copy_number`-as-a-measured-value was
+  wrong — the module never holds the measurement — yet the *range* shapes are still only as general as
+  the cases they were generalized from.)
 - Type hints mandatory; **pathlib** for paths; **absolute imports only**; **no inline imports** (a
   guarded module-level `try/except ImportError` for optional deps is the only exception).
 - Pydantic 2 for all data models. Constrained vocabularies are `frozenset[str]` + a validator, never

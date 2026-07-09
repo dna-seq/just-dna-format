@@ -25,40 +25,26 @@ from just_dna_format.derive import (
 )
 from just_dna_format.identity import validate_name
 from just_dna_format.manifest import SCHEMA_VERSION, Display, GenePanelSpec
+from just_dna_format.vocab import (
+    ALLELE_PATTERN,
+    VALID_CLIN_SIG,
+    VALID_DIRECTIONS,
+    VALID_SIGNIFICANCE,
+    check_vocab,
+    validate_allele,
+    validate_rsid,
+    validate_trait_ids,
+)
+from just_dna_format.vocab import MULTI_SEP as _MULTI_SEP
 
+# The orthogonal-axis vocabularies and identifier grammars now live in `vocab` (shared across the
+# authored models). `VALID_DIRECTIONS`/`VALID_SIGNIFICANCE`/`VALID_CLIN_SIG` (and `ALLELE_PATTERN`)
+# are re-exported here for backward compatibility. Spec-only vocabularies stay below.
 VALID_STATES: frozenset[str] = frozenset(
     {"risk", "protective", "neutral", "significant", "alt", "ref"}
 )
 VALID_CHROMOSOMES: frozenset[str] = frozenset(
     {str(i) for i in range(1, 23)} | {"X", "Y", "MT"}
-)
-
-# ── 0.3 additive vocabularies (see docs/ROADMAP.md "Planned for 0.3") ───────────
-# Effect direction — the clean scalar split out of `state`. `state` stays as the legacy
-# (required) field; `direction` is the orthogonal, optional axis.
-VALID_DIRECTIONS: frozenset[str] = frozenset({"protective", "risk", "neutral", "unknown"})
-# Graduated statistical significance — named `stat_significance` (NOT `significance`, which is the
-# clinical axis: GenePanelSpec.significance / clin_sig).
-VALID_SIGNIFICANCE: frozenset[str] = frozenset(
-    {"significant", "suggestive", "not_significant", "unknown"}
-)
-# ClinVar / ACMG clinical significance (VEP `CLIN_SIG` vocabulary). Distinct from `direction`.
-VALID_CLIN_SIG: frozenset[str] = frozenset(
-    {
-        "pathogenic",
-        "likely_pathogenic",
-        "uncertain_significance",
-        "likely_benign",
-        "benign",
-        "drug_response",
-        "association",
-        "risk_factor",
-        "protective",
-        "affects",
-        "conflicting",
-        "not_provided",
-        "other",
-    }
 )
 # `flags` is an OPEN list. These are the reserved tags the tooling acts on; any other tag is
 # accepted and surfaced as INFO (not a warning) by the compiler. Never put direction / clinical
@@ -69,14 +55,6 @@ RESERVED_FLAGS: frozenset[str] = frozenset({"conditional", "phased", "pleiotropi
 RECOMMENDED_EFFECT_MEASURES: frozenset[str] = frozenset(
     {"OR", "HR", "RR", "beta", "log(OR)", "log(HR)", "NR"}
 )
-
-RSID_PATTERN: re.Pattern[str] = re.compile(r"^rs\d+$")
-ALLELE_PATTERN: re.Pattern[str] = re.compile(r"^[ACGT]+$", re.IGNORECASE)
-# EFO/MONDO/OBA/HP-style ontology CURIE, e.g. EFO_0001645 or MONDO:0005265 (matches just-prs's
-# `trait_efo_id`). Multiple ids may be given, comma/semicolon/pipe-separated.
-TRAIT_ID_PATTERN: re.Pattern[str] = re.compile(r"^[A-Za-z][A-Za-z]*[:_]\w+$")
-# Separators accepted inside a multi-valued CSV cell (`flags`, `trait_efo_id`).
-_MULTI_SEP: re.Pattern[str] = re.compile(r"[,;|]")
 # A PMID is a run of digits. Real sources present them bare (`9545397`), bracketed/prefixed
 # (`[PMID: 9545397]`), or as a `;`-joined list (`PMID 17478681; PMID: 30278588`). We accept any
 # string that carries at least one PMID token and keep it verbatim (ROADMAP item 6 / Obs #4).
@@ -279,9 +257,7 @@ class VariantRow(BaseModel):
     @field_validator("rsid")
     @classmethod
     def _validate_rsid(cls, v: Optional[str]) -> Optional[str]:
-        if v is not None and not RSID_PATTERN.match(v):
-            raise ValueError(f"rsid must match rs<digits>, got: {v!r}")
-        return v
+        return validate_rsid(v)
 
     @field_validator("state")
     @classmethod
@@ -345,32 +321,22 @@ class VariantRow(BaseModel):
     @field_validator("direction")
     @classmethod
     def _validate_direction(cls, v: Optional[str]) -> Optional[str]:
-        if v is not None and v not in VALID_DIRECTIONS:
-            raise ValueError(f"direction must be one of {sorted(VALID_DIRECTIONS)}, got: {v!r}")
-        return v
+        return check_vocab(v, VALID_DIRECTIONS, "direction")
 
     @field_validator("stat_significance")
     @classmethod
     def _validate_stat_significance(cls, v: Optional[str]) -> Optional[str]:
-        if v is not None and v not in VALID_SIGNIFICANCE:
-            raise ValueError(
-                f"stat_significance must be one of {sorted(VALID_SIGNIFICANCE)}, got: {v!r}"
-            )
-        return v
+        return check_vocab(v, VALID_SIGNIFICANCE, "stat_significance")
 
     @field_validator("clin_sig")
     @classmethod
     def _validate_clin_sig(cls, v: Optional[str]) -> Optional[str]:
-        if v is not None and v not in VALID_CLIN_SIG:
-            raise ValueError(f"clin_sig must be one of {sorted(VALID_CLIN_SIG)}, got: {v!r}")
-        return v
+        return check_vocab(v, VALID_CLIN_SIG, "clin_sig")
 
     @field_validator("effect_allele")
     @classmethod
     def _validate_effect_allele(cls, v: Optional[str]) -> Optional[str]:
-        if v is not None and not ALLELE_PATTERN.match(v):
-            raise ValueError(f"effect_allele must be nucleotides (e.g. A, G, AC), got: {v!r}")
-        return v
+        return validate_allele(v, "effect_allele")
 
     @field_validator("flags", mode="before")
     @classmethod
@@ -396,16 +362,7 @@ class VariantRow(BaseModel):
     @field_validator("trait_efo_id")
     @classmethod
     def _validate_trait_efo_id(cls, v: Optional[str]) -> Optional[str]:
-        if v is None:
-            return v
-        for tok in _MULTI_SEP.split(v):
-            tok = tok.strip()
-            if tok and not TRAIT_ID_PATTERN.match(tok):
-                raise ValueError(
-                    f"trait_efo_id tokens must be ontology CURIEs like EFO_0001645 / "
-                    f"MONDO:0005265, got: {tok!r}"
-                )
-        return v
+        return validate_trait_ids(v)
 
     @model_validator(mode="after")
     def _validate_identification(self) -> "VariantRow":
@@ -468,32 +425,17 @@ class StudyRow(BaseModel):
     @field_validator("stat_significance")
     @classmethod
     def _validate_stat_significance(cls, v: Optional[str]) -> Optional[str]:
-        if v is not None and v not in VALID_SIGNIFICANCE:
-            raise ValueError(
-                f"stat_significance must be one of {sorted(VALID_SIGNIFICANCE)}, got: {v!r}"
-            )
-        return v
+        return check_vocab(v, VALID_SIGNIFICANCE, "stat_significance")
 
     @field_validator("trait_efo_id")
     @classmethod
     def _validate_trait_efo_id(cls, v: Optional[str]) -> Optional[str]:
-        if v is None:
-            return v
-        for tok in _MULTI_SEP.split(v):
-            tok = tok.strip()
-            if tok and not TRAIT_ID_PATTERN.match(tok):
-                raise ValueError(
-                    f"trait_efo_id tokens must be ontology CURIEs like EFO_0001645 / "
-                    f"MONDO:0005265, got: {tok!r}"
-                )
-        return v
+        return validate_trait_ids(v)
 
     @field_validator("rsid")
     @classmethod
     def _validate_rsid(cls, v: Optional[str]) -> Optional[str]:
-        if v is not None and not RSID_PATTERN.match(v):
-            raise ValueError(f"rsid must match rs<digits>, got: {v!r}")
-        return v
+        return validate_rsid(v)
 
     @field_validator("pmid")
     @classmethod
