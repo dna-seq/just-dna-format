@@ -22,6 +22,27 @@ live in `just-dna-pipelines` / `just-dna-lite` / `just-dna-marketplace`.
 4. **[docs/COMPILER.md](docs/COMPILER.md)** — the compiler's per-feature coverage table (which schema
    features are validated / materialized / computed).
 
+## The design cycle (the order of things)
+
+Feature ideas move through **one loop**; the docs are its stages, and a design task should walk them
+in order rather than jumping to code:
+
+1. **Feedback** — a consumer's field report → [docs/CONSUMER_FIELD_NOTES.md](docs/CONSUMER_FIELD_NOTES.md),
+   [docs/CONSUMER_ROUND2_AND_0_5.md](docs/CONSUMER_ROUND2_AND_0_5.md)
+2. **Usage → blockers → solvability** — run each use case against the current bricks: *enabled*,
+   *consumer-side* (the format owns nothing), or a *gap* closable additively? →
+   [docs/USE_CASES.md](docs/USE_CASES.md)  ← **start a design task here**
+3. **Means → draft schema → decision** — the proposed shape + charter check + open questions →
+   [docs/PROPOSAL_0_4.md](docs/PROPOSAL_0_4.md)
+4. **Conclusion — how to author it now, with these bricks** → [docs/REFERENCE_EXAMPLES.md](docs/REFERENCE_EXAMPLES.md)
+5. **Terminal** — either **shipped** (schema + compiler; recorded in COMPILER.md coverage) **or**
+   **deferred** (a recognised gap parked as an `RMn` roadmap item in ROADMAP.md).
+
+`USE_CASES.md` and `REFERENCE_EXAMPLES.md` are the **same use cases at two points in the loop** —
+questions (what blocks?) vs answers (author it like this). A blocker is never a dead end: it is
+dissolved (was consumer-side), closed additively, or explicitly parked. See *The feedback → schema
+cycle* in `USE_CASES.md`.
+
 ## Coding standards
 
 - **Dependency tiers are sacred** (CONSTITUTION Goal 2): never add a heavy dep to `just-dna-format`;
