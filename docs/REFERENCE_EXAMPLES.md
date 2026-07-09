@@ -5,6 +5,11 @@ These are **hand-authored sketches** of how modules are expressed with the 0.3/0
 authors and consumers** — a picture of the intended shapes. Column sets, vocab, and file names may
 still change during the 0.4 round-2 vetting. rsIDs / coordinates / effect sizes are illustrative.
 
+This doc is the **"conclusion" stage of the feedback → schema cycle** (see
+[`USE_CASES.md`](USE_CASES.md) → *The feedback → schema cycle*): where a use case, once its blockers
+are resolved into a settled shape, becomes *how to do it now, with these bricks*. For the
+*is-it-reachable-and-what's-missing* analysis of the same use cases, read `USE_CASES.md` first.
+
 **The 0.4 relational/quantitative tables in §2, §4–§8 are now schema-validated** by the sample
 implementation in `just_dna_format.{binning,pgx,pgs}` (see `schema/tests/test_v04.py`). Every CSV row
 below round-trips through its Pydantic model. The compiler does **not** yet materialize them into

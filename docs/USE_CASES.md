@@ -9,8 +9,32 @@ is missing?** The point is to separate three things that get conflated —
 - genuine **gaps** that need an additive format change.
 
 Every gap below is tagged `→ RMn` and collected in *Roadmap items surfaced* at the end; those are the
-items to migrate into [`ROADMAP.md`](ROADMAP.md). This complements [`REFERENCE_EXAMPLES.md`](REFERENCE_EXAMPLES.md)
-(which shows *how to author* a shape) by asking *whether a shape is reachable at all* and why.
+items to migrate into [`ROADMAP.md`](ROADMAP.md).
+
+## The feedback → schema cycle (where this doc sits)
+
+The design docs are stages of **one loop**; an idea moves left-to-right as it matures:
+
+1. **Feedback** — a consumer's field report. → [`CONSUMER_FIELD_NOTES.md`](CONSUMER_FIELD_NOTES.md),
+   [`CONSUMER_ROUND2_AND_0_5.md`](CONSUMER_ROUND2_AND_0_5.md)
+2. **Usage → blockers → solvability** — run each use case against the current bricks: is it *enabled*,
+   *consumer-side*, or a *gap*; and is the gap closable **additively**? → **this doc**
+3. **Means → draft schema → decision** — for a gap worth closing, the proposed shape + a charter check
+   + the open questions to settle it. → [`PROPOSAL_0_4.md`](PROPOSAL_0_4.md)
+4. **Conclusion — "how to do it now, with these bricks"** — the distilled worked example once the shape
+   is settled. → [`REFERENCE_EXAMPLES.md`](REFERENCE_EXAMPLES.md)
+5. **Terminal**, one of two:
+   - **Fixed** — schema + compiler shipped (the models; [`COMPILER.md`](COMPILER.md) marks it
+     validated/materialized), **or**
+   - **Deferred** — a recognised gap parked as a roadmap item (`RMn` → [`ROADMAP.md`](ROADMAP.md)) when
+     the means aren't worth building yet.
+
+So **this doc and `REFERENCE_EXAMPLES.md` are the same use cases at two points in the loop** — here
+they are *questions* (what blocks?), there they are *answers* (author it like this). An **ENABLED** /
+schema-ready row here graduates to a `REFERENCE_EXAMPLES` entry; a **GAP** row graduates to
+`PROPOSAL_0_4` (if being closed now) or an `RMn` roadmap item (if deferred). The loop is why a
+"blocker" is never a dead end: it is either dissolved (it was consumer-side all along), closed
+additively, or explicitly parked.
 
 **Verdict legend**
 - **ENABLED** — authorable/usable on 0.4 now, no format change.
