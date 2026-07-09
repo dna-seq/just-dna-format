@@ -58,7 +58,8 @@ form of those.
 | table-level `validate_bins(rows)` (overlap reject / gap warn) | ✅ per `(key…, trait_efo_id)` group | n/a (author-time check) | schema sample |
 | PGx `HaplotypeRow` / `AlleleFunctionRow` (star-string verbatim) / `DiplotypeRow` (canonical pair) | ✅ | ⛔ deferred | schema sample |
 | PGS `PgsRow` (declared interface; ancestry-validity fields) | ✅ `PGS<digits>`, ancestry/tier vocab, `match_rate∈[0,1]` | ⛔ deferred | schema sample |
-| reserved namespace (`caller*`, `requires_callable`, `actionability`, `acmg_sf`) | ✅ rejected via `extra=forbid` until built | — | reserved |
+| reserved namespace (`caller*`, `requires_callable`, `callable_from`, `actionability`, `acmg_sf`) | ✅ rejected via `extra=forbid` until built | — | reserved |
+| authoring reference + palette (`reference.authoring_reference()`/`json_schemas()`, `RECOMMENDED_COLORS`/`RECOMMENDED_ICONS`) | ✅ generated from the live models (drift-proof) | n/a (schema helper) | **shipped** (RM8/RM9) |
 
 ## Upgrade derivation (`state`/booleans → 0.3 axes)
 

@@ -36,6 +36,34 @@ VALID_ICON_SETS: frozenset[str] = frozenset({"fomantic", "awesome"})
 # Accepted raster logo extensions (lowercase, no dot).
 LOGO_EXTENSIONS: frozenset[str] = frozenset({"png", "jpg", "jpeg"})
 
+# A curated authoring palette (RM9): recommended `Display.color`/`icon` values by semantic use, so an
+# authoring UI / LLM picks from one shared set instead of inventing its own (just-dna-agents' MCP
+# `list_colors`/`list_icons` are the drift this replaces). Recommendation only — NOT enforced: `color`
+# is validated by `COLOR_PATTERN` and `icon` is free-form within `icon_set`. Icons name Fomantic UI
+# glyphs (the default `icon_set`); colours are the Fomantic semantic hexes.
+RECOMMENDED_COLORS: dict[str, str] = {
+    "risk": "#db2828",
+    "protective": "#21ba45",
+    "neutral": "#767676",
+    "pharmacogenomic": "#6435c9",
+    "cardiometabolic": "#00b5ad",
+    "cancer": "#f2711c",
+    "neuro": "#a333c8",
+    "info": "#2185d0",
+    "reproductive": "#e03997",
+}
+RECOMMENDED_ICONS: dict[str, str] = {
+    "default": "database",
+    "dna": "dna",
+    "cardiometabolic": "heartbeat",
+    "cancer": "ribbon",
+    "pharmacogenomic": "pills",
+    "neuro": "brain",
+    "lab": "flask",
+    "protective": "shield",
+    "reproductive": "baby",
+}
+
 
 class Identity(BaseModel):
     """Module identity. `namespace`/`version`/`canonical_id` are filled by the marketplace.

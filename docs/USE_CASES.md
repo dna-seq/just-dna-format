@@ -101,12 +101,15 @@ inside a `VariantRow.genotype` is not (see §3b) `→ RM5`.
 ### 1d. Authoring-support suggestions (from the just-dna-agents integration, ROADMAP obs 2026-07-10)
 
 - **A canonical machine/LLM-facing authoring reference.** Consumers (MCP servers, agents, docs)
-  hard-code prose summaries of the DSL that **drift** from the real schema. **GAP:** export one source
-  of truth from `just_dna_format` — `spec.authoring_reference()` and/or a generated JSON Schema — so
-  every consumer renders the current field set `→ RM8`.
-- **A recommended icon/color palette.** `Display` validates `icon_set`/`color` but ships no
-  *recommended enumerated palette*, so each authoring tool invents one. **GAP:** an optional
-  `RECOMMENDED_ICONS`/`RECOMMENDED_COLORS` (or helper) `→ RM9`.
+  hard-code prose summaries of the DSL that **drift** from the real schema. **ADOPTED (RM8, shipped in
+  the 0.4 sample):** `just_dna_format.reference.authoring_reference()` returns a JSON-serialisable
+  summary — every model's field list + all vocabularies + reserved names + the palette — **generated
+  from the live models**, so it cannot drift; `json_schemas()` gives the full JSON Schema. A consumer's
+  `get_spec_format` renders this instead of a hand-maintained blob.
+- **A recommended icon/color palette.** `Display` validates `icon_set`/`color` but shipped no
+  *recommended enumerated palette*, so each authoring tool invented one. **ADOPTED (RM9, shipped in the
+  0.4 sample):** `manifest.RECOMMENDED_COLORS`/`RECOMMENDED_ICONS` (curated `semantic-use → value`
+  maps, recommendation-only — not enforced), surfaced through `authoring_reference()`.
 
 ---
 
@@ -183,8 +186,8 @@ consumer-side one is recorded so it is not mistaken for a format task.
 | RM5 | **Symbolic/structural alleles** (`<DEL>`/`<INS>`/`<DUP>`/`<STR>`; large indels) — a representation beyond `^[ACGT]+$` | format (schema) | 3b (SV), 1b (symbolic consume) | medium |
 | RM6 | Promote `requires_callable` to a typed boolean column; reserve/build `callable_from` (DP,GQ,FT three-state) | format (schema) | 1c callability | low-medium |
 | RM7 | **Evaluation-output / report-card schema** for the verification harness | **consumer** (`just-dna-lite`), NOT the format | 1a | — (not a format task) |
-| RM8 | `spec.authoring_reference()` / generated JSON Schema — one machine-facing source of truth | format (schema) | 1d drift | low |
-| RM9 | `Display.RECOMMENDED_ICONS`/`RECOMMENDED_COLORS` — a shared authoring palette | format (schema) | 1d palette | low |
+| RM8 | ✅ **shipped in 0.4 sample** — `reference.authoring_reference()` + `json_schemas()`, generated from the live models | format (schema) | 1d drift | done |
+| RM9 | ✅ **shipped in 0.4 sample** — `manifest.RECOMMENDED_COLORS`/`RECOMMENDED_ICONS` | format (schema) | 1d palette | done |
 | RM10 | Optional declarative inheritance-expectation field (trio/de-novo assertion as data) | format (schema) | 1c trio | low (only if needed) |
 
 **Takeaway.** The two load-bearing gaps are **RM1 + RM2** (compiler materialization + multi-table
