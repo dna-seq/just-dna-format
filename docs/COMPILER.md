@@ -54,7 +54,8 @@ form of those.
 
 | 0.4 kind (model) | Validated | Materialized (→ parquet) | Status |
 |---|---|---|---|
-| binning primitive `MeasureBinRow` + `Activity/CopyNumber/RepeatAllele/Heteroplasmy` rows | ✅ shared vocab, inclusive `[min,max]`, mandatory `unresolved`, `extra=forbid` | ⛔ deferred | schema sample |
+| binning primitive `MeasureBinRow` + `Activity/CopyNumber/RepeatAllele/Heteroplasmy` rows | ✅ shared vocab, inclusive `[min,max]`, mandatory `unresolved`, `extra=forbid`, `source_field` pointer, heteroplasmy `tissue` + legacy-ref guard | ⛔ deferred | schema sample |
+| table-level `validate_bins(rows)` (overlap reject / gap warn) | ✅ per `(key…, trait_efo_id)` group | n/a (author-time check) | schema sample |
 | PGx `HaplotypeRow` / `AlleleFunctionRow` (star-string verbatim) / `DiplotypeRow` (canonical pair) | ✅ | ⛔ deferred | schema sample |
 | PGS `PgsRow` (declared interface; ancestry-validity fields) | ✅ `PGS<digits>`, ancestry/tier vocab, `match_rate∈[0,1]` | ⛔ deferred | schema sample |
 | reserved namespace (`caller*`, `requires_callable`, `actionability`, `acmg_sf`) | ✅ rejected via `extra=forbid` until built | — | reserved |

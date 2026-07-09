@@ -55,7 +55,10 @@ e4,rs429358,C,APOE
 e4,rs7412,C,APOE
 ```
 `diplotypes.csv` (`DiplotypeRow` — canonicalized `haplotype_a <= haplotype_b`, multiple rows per pair
-for **pleiotropy**: ε2/ε2 protective for AD, risk for hyperlipoproteinemia):
+for **pleiotropy**: ε2/ε2 protective for AD, risk for hyperlipoproteinemia).
+**Contract (C3):** the pair is stored **lexicographically-sorted** on the star-string (so `*10 < *2`,
+because `'1' < '2'`); a consumer MUST sort identically before lookup, or it silently misses the row —
+do not sort star-alleles numerically.
 ```csv
 gene,haplotype_a,haplotype_b,trait_efo_id,direction,clin_sig,phenotype,conclusion
 APOE,e2,e2,EFO_0000249,protective,protective,Late-onset Alzheimer's,"ε2/ε2 — reduced LOAD risk"
@@ -97,12 +100,16 @@ Homoplasmic (`variants.csv`):
 rsid,chrom,start,genotype,direction,clin_sig,gene,phenotype,trait_efo_id,conclusion
 ,MT,3243,G,risk,pathogenic,MT-TL1,MELAS,MONDO_0010789,"Homoplasmic m.3243A>G"
 ```
-Heteroplasmy (`heteroplasmy.csv`, `measure_kind=allele_fraction`, bounds in `[0,1]`):
+Heteroplasmy (`heteroplasmy.csv`, `measure_kind=allele_fraction`, bounds in `[0,1]`). `tissue` is
+optional but load-bearing — **bins are tissue-conditional** (a blood fraction under-represents the
+affected-tissue burden), so tissue is part of the key. `source_field=AF` binds the measure to the VCF
+(e.g. Mutect2-mito `FORMAT/AF`). `reference_sequence` rejects the legacy `NC_001807` lineage (it yields
+a confidently-wrong haplogroup); use `NC_012920.1` (rCRS).
 ```csv
-gene,reference_sequence,measure_kind,measure_min,measure_max,direction,clin_sig,phenotype,trait_efo_id,conclusion,unresolved
-MT-TL1,NC_012920.1,allele_fraction,0.8,1.0,risk,pathogenic,MELAS,MONDO_0010789,"high heteroplasmy — symptomatic",false
-MT-TL1,NC_012920.1,allele_fraction,0.1,0.8,neutral,uncertain_significance,MELAS,MONDO_0010789,"low-level — usually subclinical",false
-MT-TL1,NC_012920.1,allele_fraction,,,,,,,"caller artifact rejected — not called",true
+gene,reference_sequence,tissue,source_field,measure_kind,measure_min,measure_max,direction,clin_sig,phenotype,trait_efo_id,conclusion,unresolved
+MT-TL1,NC_012920.1,blood,AF,allele_fraction,0.8,1.0,risk,pathogenic,MELAS,MONDO_0010789,"high heteroplasmy (blood) — symptomatic",false
+MT-TL1,NC_012920.1,blood,AF,allele_fraction,0.1,0.8,neutral,uncertain_significance,MELAS,MONDO_0010789,"low-level (blood) — usually subclinical",false
+MT-TL1,NC_012920.1,blood,AF,allele_fraction,,,,,,,"caller artifact rejected — not called",true
 ```
 A two-allele genotype on `MT` still raises the item-5b guardrail warning (MT is not diploid).
 
@@ -169,18 +176,28 @@ diplotype + CN/SV. The `unresolved` row is the safety property: no diplotype ⇒
 
 `RepeatAlleleRow`, keyed on `(gene, repeat_unit)` — the motif is part of the identity (T3): a repeat
 count is only comparable within its motif definition. The count is a **consumer** call
-(ExpansionHunter / adVNTR / a span genotyper) that must state the motif it counted.
+(ExpansionHunter / adVNTR / a span genotyper) that must state the motif it counted. `source_field=REPCN`
+binds the measure to an ExpansionHunter VCF (`INFO/RU` → `repeat_unit`, `FORMAT/REPCN` → the count) —
+consumable with zero glue. **Author the reference (`≤26 normal`) bin** so every count hits exactly one
+bin; `validate_bins()` rejects overlaps and warns on interior gaps.
 ```csv
-gene,repeat_unit,measure_kind,measure_min,measure_max,direction,clin_sig,phenotype,trait_efo_id,conclusion,unresolved
-HTT,CAG,repeat_count,40,,risk,pathogenic,Huntington disease (full penetrance),MONDO_0007739,"≥40 CAG — fully penetrant",false
-HTT,CAG,repeat_count,36,39,risk,pathogenic,Huntington disease (reduced penetrance),MONDO_0007739,"36–39 CAG — reduced penetrance",false
-HTT,CAG,repeat_count,27,35,neutral,uncertain_significance,Intermediate allele,MONDO_0007739,"27–35 CAG — intermediate",false
-HTT,CAG,repeat_count,6,26,neutral,benign,Normal,MONDO_0007739,"≤26 CAG — normal",false
-HTT,CAG,repeat_count,,,,,,,"repeat not spanned on short reads (CI) — unresolved",true
+gene,repeat_unit,source_field,measure_kind,measure_min,measure_max,direction,clin_sig,phenotype,trait_efo_id,conclusion,unresolved
+HTT,CAG,REPCN,repeat_count,40,,risk,pathogenic,Huntington disease (full penetrance),MONDO_0007739,"≥40 CAG — fully penetrant",false
+HTT,CAG,REPCN,repeat_count,36,39,risk,pathogenic,Huntington disease (reduced penetrance),MONDO_0007739,"36–39 CAG — reduced penetrance",false
+HTT,CAG,REPCN,repeat_count,27,35,neutral,uncertain_significance,Intermediate allele,MONDO_0007739,"27–35 CAG — intermediate",false
+HTT,CAG,REPCN,repeat_count,6,26,neutral,benign,Normal,MONDO_0007739,"≤26 CAG — normal",false
+HTT,CAG,REPCN,repeat_count,,,,,,,"repeat not spanned on short reads (CI) — unresolved",true
 ```
+Notes: **`repeat_unit` is free-form** (large composite VNTR motifs like DRD4 exon-3 ~48 bp and DAT1
+~40 bp are real, not `CAG`-style trinucleotides — warn, never reject, on non-`[ACGTN]`). Bounds are
+`float` because **half-repeats are real** (MAOA-uVNTR 3.5R). Forensic STR **microvariant** notation
+(`TH01 9.3` = "9 repeats + 3 bases", not decimal 9.3) is an allele-*name* convention, not a binning
+bound — for pathogenic-threshold loci (HTT) it never matters; for forensic STRs, carry the exact
+allele string in the reserved motif-path escape hatch, not the float bound. **5-HTTLPR does not belong
+here** — it is a biallelic **S/L structural indel** (a ~43 bp insertion), not a repeat *count*; express
+it in the genotype/haplotype model (a two-state call, usually phased with `rs25531` — a mini-diplotype).
 The complex-VNTR motif-path form (DAT1 `A-A-B-C-D-…`) is reserved as the home for the sanctioned
-declarative-grammar escape hatch (a regex over an allele string) if a plain count proves too coarse —
-not built here.
+declarative-grammar escape hatch (a regex over an allele string) if a plain count proves too coarse.
 
 ---
 
@@ -190,11 +207,13 @@ not built here.
 `GenePanelSpec`, not a binning table). The ancestry-validity fields are the anti-misuse guardrail: a
 consumer refuses or caveats an out-of-ancestry application instead of silently miscalibrating.
 ```csv
-pgs_id,trait_efo_id,note,group,training_ancestry,match_rate,research_tier
-PGS000135,EFO_0000692,"Schizophrenia (EUR-derived)",psychiatric,EUR,0.94,research_only
-PGS000765,EFO_0001645,"Coronary artery disease",cardiometabolic,EUR|EAS,0.88,research_only
+pgs_id,trait_efo_id,note,group,training_ancestry,training_cohort,match_rate_floor,research_tier
+PGS000135,EFO_0000692,"Schizophrenia (EUR-derived)",psychiatric,EUR,,0.8,research_only
+PGS000765,EFO_0001645,"Coronary artery disease",cardiometabolic,EUR,"UK Biobank NW-EUR",0.8,research_only
 ```
 `research_tier=research_only` pins as *data* that a PRS is a Z/percentile *within a matched reference
-distribution*, never an ancestry-calibrated absolute risk; `training_ancestry` lets a consumer
-withhold or caveat the score off-population; `match_rate` is the variant-match floor below which the
-score is invalid.
+distribution*, never an ancestry-calibrated absolute risk; `training_ancestry` (superpop floor) +
+optional `training_cohort` (sub-superpop precision) let a consumer withhold or caveat the score
+off-population; **`match_rate_floor`** is the author-set variant-match floor below which the score is
+invalid. The *observed* per-sample match rate is a measurement — it lives consumer-side, never in the
+module (the data-agnostic north star).

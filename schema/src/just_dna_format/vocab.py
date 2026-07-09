@@ -51,18 +51,27 @@ MULTI_SEP: re.Pattern[str] = re.compile(r"[,;|]")
 
 # ── Reserved namespace (0.4) ──────────────────────────────────────────────────────────────────
 # Names reserved against the one-way door but deliberately NOT built this run (see docs/PROPOSAL_0_4
-# §T2/A4/B6). The 0.4 tables set `model_config = ConfigDict(extra="forbid")`, so a column bearing one
-# of these is rejected until a future release claims it. `reference_sequence` and `suballele` are
-# BUILT (heteroplasmy key / allele_function column) and so are absent here.
+# §T2/A4/B6 + round-2). The 0.4 tables set `model_config = ConfigDict(extra="forbid")`, so a column
+# bearing one of these is rejected until a future release claims it. `reference_sequence`,
+# `suballele`, `tissue`, `assay_context`, and `source_field` are BUILT this run, so they are absent
+# here.
 RESERVED_NAMES_0_4: frozenset[str] = frozenset(
     {
-        "caller",  # T2 — caller provenance triple
+        "caller",  # T2 — caller provenance triple (round-2: three columns, not one composite)
         "caller_version",
         "reference_db",
-        "requires_callable",  # A4 — no-call ≠ hom-ref (leaning a reserved flag first)
+        "requires_callable",  # A4 — no-call ≠ hom-ref (flag first; round-2: expect a typed column)
+        "callable_from",  # round-2 3d/0.5 — VCF-derived three-state callability signal (DP,GQ,FT)
         "actionability",  # B6 — annotation-level actionability axis (note-only)
-        "acmg_sf",  # B6 — ACMG secondary-findings membership
+        "acmg_sf",  # B6/round-2 Q9 — ACMG-SF list membership, a separate flag (not an actionability value)
     }
+)
+# The reserved `actionability` axis's recommended seed vocabulary (documentation — the field is not
+# built yet, so this is not enforced). Round-2 Q9 extended the round-1 seed with `descriptive` (a
+# large fraction of findings are self-knowledge / no-action — an explicit "none", not forced into
+# `actionable`) and `modifiable` (lifestyle-actionable, distinct from clinical `actionable`).
+ACTIONABILITY_SEED: frozenset[str] = frozenset(
+    {"actionable", "preventable", "pharmacogenomic", "incurable", "reproductive", "descriptive", "modifiable"}
 )
 
 

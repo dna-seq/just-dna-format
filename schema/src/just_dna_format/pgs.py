@@ -7,10 +7,14 @@ dead data. It is therefore a *declared interface* (like `GenePanelSpec`), **not*
 binning table: a PRS yields a Z/percentile *within a matched reference distribution*, which the
 format does not bin.
 
-The one-way-door fields (PROPOSAL_0_4 §B5) are pinned here from day one so a consumer can refuse or
-caveat an out-of-ancestry application instead of silently miscalibrating:
-- `training_ancestry` — the population(s) the score was validated in (ancestry parameter axis).
-- `match_rate` — a hard floor (a > ~20% variant mismatch invalidates the score).
+The one-way-door fields (PROPOSAL_0_4 §B5, consumer round-2 Q8) are pinned here from day one so a
+consumer can refuse or caveat an out-of-ancestry application instead of silently miscalibrating:
+- `training_ancestry` — the superpopulation(s) the score was validated in (required floor), plus an
+  optional free-form `training_cohort` for the sub-superpop precision superpop codes can't express
+  (a Northwest-EUR-trained score applied to a Finnish/Ashkenazi sample).
+- `match_rate_floor` — the author-set floor (a > ~20% variant mismatch invalidates the score). Only
+  the *floor* lives here: the *observed* per-sample match rate is a **measurement**, so by the
+  data-agnostic north star (CLAUDE.md) it is consumer/runtime-side and must NOT live in the module.
 - `research_tier` — pins as *data* that a PRS is a within-reference Z/percentile, never an
   ancestry-calibrated absolute risk; `|Z| >= 2.5` in a healthy proband is a population-stratification
   signal, not a disease prediction.
@@ -46,10 +50,18 @@ class PgsRow(BaseModel):
     group: Optional[str] = Field(default=None, description="Grouping label within the module")
     training_ancestry: Optional[list[str]] = Field(
         default=None,
-        description="Population(s) the score was validated in (1000G superpop codes; multi-valued)",
+        description="Superpopulation(s) the score was validated in (1000G superpop codes; multi-valued)",
     )
-    match_rate: Optional[float] = Field(
-        default=None, description="Variant-match floor in [0,1]; below it the score is invalid"
+    training_cohort: Optional[str] = Field(
+        default=None,
+        description="Optional free-form sub-superpop cohort, e.g. 'FIN', 'Ashkenazi', 'UK Biobank NW-EUR'",
+    )
+    match_rate_floor: Optional[float] = Field(
+        default=None,
+        description=(
+            "Author-set variant-match floor in [0,1]; a score computed below it is invalid. Only the "
+            "floor lives in-module — the observed per-sample match rate is a measurement (consumer-side)."
+        ),
     )
     research_tier: Optional[str] = Field(
         default=None, description="research_only | calibrated (VALID_RESEARCH_TIERS)"
@@ -85,11 +97,11 @@ class PgsRow(BaseModel):
             check_vocab(tok, VALID_TRAINING_ANCESTRY, "training_ancestry")
         return v
 
-    @field_validator("match_rate")
+    @field_validator("match_rate_floor")
     @classmethod
-    def _validate_match_rate(cls, v: Optional[float]) -> Optional[float]:
+    def _validate_match_rate_floor(cls, v: Optional[float]) -> Optional[float]:
         if v is not None and not (0.0 <= v <= 1.0):
-            raise ValueError(f"match_rate must be within [0, 1], got {v}")
+            raise ValueError(f"match_rate_floor must be within [0, 1], got {v}")
         return v
 
     @field_validator("research_tier")

@@ -16,6 +16,7 @@ from just_dna_format.binning import (
     HeteroplasmyRow,
     MeasureBinRow,
     RepeatAlleleRow,
+    validate_bins,
 )
 from just_dna_format.pgs import (
     VALID_RESEARCH_TIERS,
@@ -152,10 +153,12 @@ def test_function_status_vocabulary_is_frozen() -> None:
 def test_pgs_row_accepts_ancestry_validity_fields() -> None:
     p = PgsRow(
         pgs_id="PGS000135", trait_efo_id="EFO_0000692", training_ancestry="EUR|EAS",
-        match_rate=0.94, research_tier="research_only", note="SCZ",
+        training_cohort="UK Biobank NW-EUR", match_rate_floor=0.8, research_tier="research_only",
+        note="SCZ",
     )
     assert p.training_ancestry == ["EUR", "EAS"]
-    assert p.match_rate == 0.94 and p.research_tier == "research_only"
+    assert p.training_cohort == "UK Biobank NW-EUR"
+    assert p.match_rate_floor == 0.8 and p.research_tier == "research_only"
 
 
 @pytest.mark.parametrize(
@@ -163,8 +166,9 @@ def test_pgs_row_accepts_ancestry_validity_fields() -> None:
     [
         {"pgs_id": "135"},  # not a PGS id
         {"pgs_id": "PGS1", "training_ancestry": "XXX"},  # unknown superpop
-        {"pgs_id": "PGS1", "match_rate": 1.2},  # out of [0,1]
+        {"pgs_id": "PGS1", "match_rate_floor": 1.2},  # out of [0,1]
         {"pgs_id": "PGS1", "research_tier": "clinical"},  # bad tier
+        {"pgs_id": "PGS1", "match_rate": 0.9},  # renamed away → now an unknown field
         {"pgs_id": "PGS1", "caller": "prs"},  # reserved name
     ],
 )
@@ -201,7 +205,7 @@ def test_model_level_roundtrip_is_lossless_and_idempotent() -> None:
         HaplotypeRow(haplotype_name="*4", rsid="rs3892097", allele="A", gene="CYP2D6"),
         AlleleFunctionRow(gene="CYP2D6", allele="*36+*10", activity_value=0.25, suballele="10.001"),
         DiplotypeRow(gene="CYP2D6", haplotype_a="*4", haplotype_b="*1", phenotype="IM", conclusion="c"),
-        PgsRow(pgs_id="PGS000135", training_ancestry="EUR", match_rate=0.94,
+        PgsRow(pgs_id="PGS000135", training_ancestry="EUR", match_rate_floor=0.8,
                research_tier="research_only"),
     ]
     for row in rows:
@@ -209,3 +213,69 @@ def test_model_level_roundtrip_is_lossless_and_idempotent() -> None:
         assert reparsed == row, f"round-trip changed {type(row).__name__}"
         # idempotent: a second pass is a fixpoint
         assert type(row).model_validate(reparsed.model_dump()) == reparsed
+
+
+# ── round-2: source_field (VCF binding pointer, not code) ───────────────────────────────────────
+def test_source_field_is_a_pointer_not_an_expression() -> None:
+    assert RepeatAlleleRow(
+        gene="HTT", repeat_unit="CAG", measure_min=40, conclusion=">=40", source_field="REPCN"
+    ).source_field == "REPCN"
+    assert CopyNumberRow(
+        gene="SMN1", measure_min=0, measure_max=0, conclusion="0", source_field="CN|DS"
+    ).source_field == "CN|DS"
+    for bad in ("AF*DP", "AF + 1", "AF DP", "AF;DP"):
+        with pytest.raises(ValidationError):
+            RepeatAlleleRow(gene="HTT", repeat_unit="CAG", measure_min=40, conclusion="x", source_field=bad)
+
+
+# ── round-2 Q6: heteroplasmy tissue + legacy reference guard ────────────────────────────────────
+def test_heteroplasmy_tissue_fields_and_legacy_reference_guard() -> None:
+    ok = HeteroplasmyRow(
+        gene="MT-TL1", reference_sequence="NC_012920.1", measure_min=0.8, measure_max=1.0,
+        conclusion="high", tissue="blood", assay_context="WGS",
+    )
+    assert ok.tissue == "blood" and ok.assay_context == "WGS"
+    for legacy in ("NC_001807", "NC_001807.4"):
+        with pytest.raises(ValidationError):  # confidently-wrong-haplogroup landmine
+            HeteroplasmyRow(gene="MT-TL1", reference_sequence=legacy, measure_min=0.8, conclusion="x")
+
+
+# ── round-2 C1: table-level bin coherence (overlap reject, gap warn, key-differentiated) ─────────
+def _htt_bins() -> list[RepeatAlleleRow]:
+    spans = [(6, 26, "normal"), (27, 35, "int"), (36, 39, "reduced"), (40, None, "full")]
+    return [
+        RepeatAlleleRow(gene="HTT", repeat_unit="CAG", measure_min=lo, measure_max=hi,
+                        trait_efo_id="MONDO_0007739", conclusion=c)
+        for lo, hi, c in spans
+    ]
+
+
+def test_validate_bins_accepts_contiguous_rejects_overlap_warns_gap() -> None:
+    assert validate_bins(_htt_bins()) == []  # contiguous integer bins: no warning
+    # drop the 36-39 bin → a real integer gap between 35 and 40
+    gapped = [r for r in _htt_bins() if r.measure_min != 36]
+    warns = validate_bins(gapped)
+    assert warns and "no bin covers" in warns[0]
+    # an overlapping resolved range is rejected outright
+    overlap = _htt_bins() + [
+        RepeatAlleleRow(gene="HTT", repeat_unit="CAG", measure_min=38, measure_max=45,
+                        trait_efo_id="MONDO_0007739", conclusion="oops")
+    ]
+    with pytest.raises(ValueError):
+        validate_bins(overlap)
+
+
+def test_validate_bins_differentiates_by_modifier_and_trait() -> None:
+    # two sharp [0,0] SMN1 rows differing only by SMN2 modifier are distinct keys, not an overlap
+    smn = [
+        CopyNumberRow(gene="SMN1", measure_min=0, measure_max=0, modifier_gene="SMN2", modifier_cn=3,
+                      trait_efo_id="MONDO_0001516", conclusion="milder"),
+        CopyNumberRow(gene="SMN1", measure_min=0, measure_max=0, modifier_gene="SMN2", modifier_cn=1,
+                      trait_efo_id="MONDO_0001516", conclusion="severe"),
+    ]
+    assert validate_bins(smn) == []
+    # unresolved sentinels are ignored (no range to overlap)
+    assert validate_bins(_htt_bins() + [
+        RepeatAlleleRow(gene="HTT", repeat_unit="CAG", unresolved=True,
+                        trait_efo_id="MONDO_0007739", conclusion="CI")
+    ]) == []

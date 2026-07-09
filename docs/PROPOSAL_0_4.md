@@ -310,21 +310,34 @@ reproductive}` and whether ACMG-SF membership is a *value* in this axis or a sep
 
 ---
 
-## Round-2 checklist for the consumer
+## Round-2 checklist — ALL RESOLVED
 
-The freeze waits on these answers (all flagged inline above):
+Answered from production caller data in [`CONSUMER_ROUND2_AND_0_5.md`](CONSUMER_ROUND2_AND_0_5.md)
+and actioned in the sample (`vocab`/`binning`/`pgs`). The bytes can freeze.
 
-1. ~~Binning range convention — half-open `[min,max)` vs inclusive~~ **→ resolved by the sample:
-   inclusive `[min,max]`, `min == max` = sharp value, `unresolved` = a sentinel row (see Findings).**
-2. Provenance triple — three columns vs one composite string.
-3. `reference_sequence` — validated accession vocabulary vs free-form + warning.
-4. `requires_callable` — reserved flag vs typed boolean column.
-5. Repeat `repeat_unit` — free-form motif vs constrained ACGT/IUPAC pattern; 5-HTTLPR handling.
-6. Heteroplasmy — is `tissue`/`assay_context` in-format or consumer-side?
-7. CNV modifier — is one `modifier_gene`/`modifier_cn` pair enough for every dosage locus?
-8. `pgs.csv` — `training_ancestry` vocabulary; `match_rate` author-floor vs consumer-observed vs both;
-   `research_tier` boolean vs vocabulary.
-9. `actionability` — seed vocabulary; ACMG-SF as value vs separate `acmg_sf` flag.
+1. Range convention → **inclusive `[min,max]`**, `min == max` = sharp value, `unresolved` = a sentinel
+   row. Built.
+2. Provenance triple → **three columns** (`caller`/`caller_version`/`reference_db`), reserved. Callers
+   pin and query the three axes independently.
+3. `reference_sequence` → **not a closed allow-list; reject the enumerated legacy landmine**
+   (`NC_001807`, the confidently-wrong-haplogroup lineage). Built on `HeteroplasmyRow`.
+4. `requires_callable` → **reserved flag now, typed column expected later** (callability is a
+   heavily-filtered first-class state consumer-side). Plus `callable_from` reserved (0.5 signal).
+5. `repeat_unit` → **free-form** (long composite VNTR motifs are real; warn-not-reject on non-`[ACGTN]`).
+   **5-HTTLPR is NOT a repeat locus** — an S/L structural indel → genotype/haplotype model (doc note).
+6. Heteroplasmy tissue → **in-format**: optional `tissue`/`assay_context` on `HeteroplasmyRow` (+ in its
+   key), bins are tissue-conditional. Accepted the consumer's divergence from the consumer-side lean.
+7. CNV modifier → **one pair is enough**; a `dosage_modifiers` side table is the fallback if ever needed,
+   not a tuple key. Frozen at one pair.
+8. `pgs.csv` → `training_ancestry` **superpop floor + optional free-form `training_cohort`**; `match_rate`
+   **renamed `match_rate_floor`, floor-only** (observed rate = measurement = consumer-side, per the north
+   star); `research_tier` **stays a vocabulary**. Built.
+9. `actionability` → seed **+= `descriptive`, `modifiable`**; **`acmg_sf` a separate reserved flag**
+   (list-membership ⟂ category). Reserved + seed documented in `vocab.ACTIONABILITY_SEED`.
+
+Plus review catches: **C1** (table-level `validate_bins` overlap/gap) built; **C2** (STR microvariant
+`9.3`) handled by doc note, `float` kept; **C3** (lexicographic diplotype canonicalization) documented
+in the CSV contract. And **3a `source_field`** pulled into 0.4 as a declarative VCF pointer.
 
 ---
 
