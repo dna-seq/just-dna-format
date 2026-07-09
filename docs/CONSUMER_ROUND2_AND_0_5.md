@@ -367,7 +367,9 @@ class of our errors. Take what's useful, reject what isn't; that's the deal.
 >   north star it stays consumer-side (a `just-dna-lite` contract), **not** in `just-dna-format`. So 3b
 >   is a `just-dna-lite` feature whose only format dependency (field-binding) already shipped. The
 >   format "helps" purely by the properties it already froze — declarative-not-code makes a downloaded
->   panel safe to run, integrity makes the diff trustworthy. Nothing to schedule here.
+>   panel safe to run, integrity makes the diff trustworthy. Nothing to schedule here. Recorded as an
+>   *enabled* use case (not a gap) in [`USE_CASES.md`](USE_CASES.md) §1a, where every 0.5 suggestion
+>   is run through the same what's-blocking lens.
 > - **3c augmented-VCF — endorsed as the interface** for your cracked short-read loci (a synthetic
 >   `<STR>` record with `INFO/RU` + `FORMAT/REPCN` + custom evidence fields), consumed through the same
 >   `source_field=REPCN` path. No special case — exactly the "the format binds to the VCF, doesn't
