@@ -39,8 +39,9 @@ from pydantic import ValidationError
 from just_dna_compiler.models import CompilationResult, ValidationResult
 
 # Genotype allele separators: `/` (unphased), `|` (phased). See ROADMAP 0.3 item 5b. Splitting on
-# both yields the allele list; phase (the `|` vs `/` distinction) is NOT preserved in the artifact —
-# that is an intentionally-deferred computed item (see docs/COMPILER.md).
+# both yields the allele list; this function discards the `|` vs `/` distinction. Phase itself is
+# preserved separately via the `phased` column (materialized in `_build_weights`, re-emitted in
+# `reverse_module`), so the round-trip is lossless — see docs/COMPILER.md and CONSTITUTION Principle 7.
 _GENOTYPE_SEP: re.Pattern[str] = re.compile(r"[/|]")
 
 
