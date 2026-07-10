@@ -5,6 +5,43 @@ Shared change log for the just-dna module format/compiler ecosystem. Because
 **just-dna-marketplace**, and **just-dna-agents**, cross-repo integration changes are recorded
 here so parallel work in the other repos isn't surprised. Newest first.
 
+## 2026-07-10 — 0.4 (unpublished) — quantitative tables + composed modules
+
+Additive 0.4 schema shapes (frozen per `docs/PROPOSAL_0_4.md`) with full compiler materialization.
+**`schema_version` stays `"1.0"`** — every 0.1–0.3 module keeps validating; all new tables/columns
+are optional. 0.4 is **unpublished**, so the one-time `artifact.digest` move is still free to absorb.
+
+- **The measure→phenotype binning primitive** (`just_dna_format.binning`): one shared column
+  vocabulary (`measure_kind`, inclusive `[measure_min, measure_max]`, `direction`/`clin_sig`/
+  `trait_efo_id`, `conclusion`, mandatory `unresolved` sentinel, declarative `source_field` pointer)
+  across per-quantity tables — `activity_phenotype.csv`, `copynumbers.csv` (+ optional
+  `modifier_gene`/`modifier_cn`), `repeat_alleles.csv`, `heteroplasmy.csv` (tissue + legacy-`NC_001807`
+  reference guard). There is **no `copy_number` column** — a sharp value is `measure_min == measure_max`.
+- **PGx star-alleles** (`just_dna_format.pgx`): `haplotypes.csv` (variant↔allele junction),
+  `allele_function.csv` (star-string verbatim identity + optional `suballele`/CN/SV conveniences),
+  `diplotypes.csv` (canonicalized pair fallback, + optional `drug`/`response`/`evidence_level`), and
+  **PharmGKB** `pharm_variants.csv` (single-variant drug response, `evidence_level` 1A…4).
+- **PGS** (`just_dna_format.pgs`): `pgs.csv` — a PGS-Catalog-ID manifest with the ancestry-validity
+  one-way-door fields (`training_ancestry`, `training_cohort`, `match_rate_floor`, `research_tier`).
+- **`VariantRow` general axes** (optional): `requires_callable`, `acmg_sf`, `actionability`
+  (validated against `ACTIONABILITY_SEED`) — retired from the reserved namespace.
+- **Compiler materialization (RM1 + RM2).** A generic model-driven materializer compiles all nine
+  table kinds to parquet with lossless, idempotent round-trip. A module **composes from optional
+  table kinds**: `variants.csv` is no longer mandatory — a PGx/PharmGKB/PRS-only module compiles and
+  reverses without an empty `variants.csv`; `studies.csv` is required iff `variants.csv` is present.
+- **Table-level coherence is enforced at compile time.** `validate_bins` now runs inside
+  `validate_spec`: **overlapping resolved bins are a compile error** (a measurement would select two
+  phenotypes), interior coverage gaps a warning, and more than one `unresolved` sentinel per key
+  group an error. Duplicate rows (diplotype pair, `pgs_id`, `(pharm variant, drug)`, allele-function
+  allele, haplotype-defining variant) are errors — the 0.4 analog of the SNP core's duplicate check.
+- **Drift-proof authoring reference** (`just_dna_format.reference.authoring_reference()` /
+  `json_schemas()`, RM8) generated from the live models, plus a recommended `RECOMMENDED_COLORS`/
+  `RECOMMENDED_ICONS` palette (RM9) — so MCP servers / agents render the current field set instead of
+  a hand-maintained summary that drifts.
+- **Shared vocabulary leaf** (`just_dna_format.vocab`): the orthogonal-axis vocabularies and
+  identifier grammars moved out of `spec` into one dependency-light source of truth, re-exported from
+  `spec` for backward compatibility.
+
 ## 2026-07-08 — just-dna-format 0.3.0 + just-dna-compiler 0.3.0
 
 Additive schema + partial compiler coverage for the 0.3 columns. **`schema_version` stays `"1.0"`** —

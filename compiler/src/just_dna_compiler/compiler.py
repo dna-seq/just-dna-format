@@ -14,10 +14,11 @@ import csv
 import re
 import shutil
 import types
+from collections import defaultdict
 from datetime import datetime, timezone
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
-from typing import Any, Optional, Union, get_args, get_origin
+from typing import Any, Callable, Optional, Union, get_args, get_origin
 
 import polars as pl
 import yaml
@@ -38,7 +39,9 @@ from just_dna_format.binning import (
     ActivityPhenotypeRow,
     CopyNumberRow,
     HeteroplasmyRow,
+    MeasureBinRow,
     RepeatAlleleRow,
+    validate_bins,
 )
 from just_dna_format.pgs import PgsRow
 from just_dna_format.pgx import (
@@ -79,6 +82,20 @@ _TABLE_KINDS: tuple[tuple[str, str, type[BaseModel]], ...] = (
     ("pharm_variants.csv", "pharm_variants.parquet", PharmVariantRow),
 )
 _TABLE_KIND_CSVS: tuple[str, ...] = tuple(csv for csv, _, _ in _TABLE_KINDS)
+
+# Natural identity key per table kind, for duplicate-row detection (the 0.4 analog of the SNP core's
+# duplicate-(variant, genotype) check). Binning kinds are omitted: an exact-duplicate *resolved* bin
+# is caught as an overlap by `validate_bins`, and duplicate *unresolved* sentinels are caught
+# separately in `_validate_table_kind`. A `HaplotypeRow`'s identity is (allele, defining variant); a
+# `PgsRow`/`DiplotypeRow`/`PharmVariantRow` key includes `trait_efo_id`/`drug` so a legitimately
+# pleiotropic or multi-drug row is not a false duplicate.
+_TABLE_DUPE_KEYS: dict[type[BaseModel], Callable[[Any], tuple]] = {
+    HaplotypeRow: lambda r: (r.haplotype_name, r.rsid or f"{r.chrom}:{r.start}", r.allele),
+    AlleleFunctionRow: lambda r: (r.gene, r.allele),
+    DiplotypeRow: lambda r: (r.gene, r.haplotype_a, r.haplotype_b, r.trait_efo_id),
+    PgsRow: lambda r: (r.pgs_id, r.trait_efo_id),
+    PharmVariantRow: lambda r: (r.variant_key, r.drug),
+}
 
 _INPUT_FILES: tuple[str, ...] = (
     "module_spec.yaml",
@@ -167,6 +184,11 @@ def _write_table_csv(df: pl.DataFrame, model: type[BaseModel], path: Path) -> No
                     out[name] = "|".join(value) if value else ""
                 elif isinstance(value, bool):
                     out[name] = "true" if value else "false"
+                elif isinstance(value, float) and value.is_integer():
+                    # An integer-valued count (copy number, repeat count) is stored as a float
+                    # `measure_min/max` but renders back as a bare int, keeping the reversed CSV
+                    # human-authorable (40, not 40.0). Value-preserving: "40" reloads to 40.0.
+                    out[name] = str(int(value))
                 else:
                     out[name] = str(value)
             writer.writerow(out)
@@ -405,6 +427,53 @@ def _cross_validate_studies(
     return [], warnings
 
 
+def _validate_table_kind(
+    csv_name: str, model: type[BaseModel], rows: list[Any]
+) -> tuple[list[str], list[str]]:
+    """Table-level coherence for one 0.4 table kind, after per-row validation has passed.
+
+    Returns (errors, warnings). Two families of check:
+
+    - **Binning tables** (`MeasureBinRow` subclasses) run `validate_bins` — overlapping resolved bins
+      are an **error** (a measurement would select two phenotypes), interior coverage gaps a
+      **warning**. Plus: at most one `unresolved` sentinel per key group (a consumer selects one when
+      the measurement is absent, so two is ambiguous) — an error.
+    - **All keyed kinds** get duplicate-row detection via `_TABLE_DUPE_KEYS` — an error, mirroring the
+      SNP core's duplicate-(variant, genotype) rule.
+    """
+    errors: list[str] = []
+    warnings: list[str] = []
+
+    if issubclass(model, MeasureBinRow):
+        try:
+            for w in validate_bins(rows):
+                warnings.append(f"{csv_name}: {w}")
+        except ValueError as exc:
+            errors.append(f"{csv_name}: {exc}")
+        sentinels: dict[tuple, int] = defaultdict(int)
+        for r in rows:
+            if r.unresolved:
+                group = tuple(getattr(r, f, None) for f in r._KEY_FIELDS) + (r.trait_efo_id,)
+                sentinels[group] += 1
+        for group, count in sentinels.items():
+            if count > 1:
+                errors.append(
+                    f"{csv_name}: {count} unresolved sentinel rows for key {group} — a consumer "
+                    f"selects one when a measurement is absent, so at most one is allowed"
+                )
+
+    keyfn = _TABLE_DUPE_KEYS.get(model)
+    if keyfn is not None:
+        seen: set[tuple] = set()
+        for r in rows:
+            key = keyfn(r)
+            if key in seen:
+                errors.append(f"{csv_name}: duplicate row for key {key}")
+            seen.add(key)
+
+    return errors, warnings
+
+
 # ── Public API ─────────────────────────────────────────────────────────────────
 
 
@@ -449,8 +518,15 @@ def validate_spec(spec_dir: Path) -> ValidationResult:
         all_errors.extend(kind_errors)
         all_warnings.extend(kind_warnings)
         kind_row_counts[csv_name] = len(rows)
-        if not rows and not kind_errors:
-            all_errors.append(f"{csv_name} is present but has no rows.")
+        if not rows:
+            if not kind_errors:
+                all_errors.append(f"{csv_name} is present but has no rows.")
+        elif not kind_errors:
+            # Table-level coherence (bin overlap/gap, single sentinel, duplicate keys) — only when
+            # every row validated, so the checks run on a complete, trustworthy set.
+            tbl_errors, tbl_warnings = _validate_table_kind(csv_name, model, rows)
+            all_errors.extend(tbl_errors)
+            all_warnings.extend(tbl_warnings)
 
     # Composition: a module must carry at least one recognized table kind.
     if not has_variants and not kind_row_counts:
