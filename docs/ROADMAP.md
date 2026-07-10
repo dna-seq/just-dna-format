@@ -367,6 +367,15 @@ lives in `just-dna-pipelines`, storage/serving in `just-dna-marketplace`.
   `_SPEC_SUFFIXES`. See CHANGELOG.md 2026-07-06.
 - **just-dna-marketplace** — add `just-dna-compiler` as the M4 publish dependency; serve `logs` via
   the files endpoint; aggregate cross-version provenance for the module detail view.
+- **just-dna-agents** — ✅ **done (2026-07-10)**: retired its homegrown spec/compiler/resolver and
+  now depends on `just-dna-format>=0.3.0` + `just-dna-compiler>=0.3.0`. The duplicate `models.py` /
+  `compiler.py` were deleted and every call site (package `__init__`, CLI, MCP server + CLI, tests)
+  hard-repointed at the libs; `resolver.py` was reduced to an app-side *provisioning* helper
+  (`ensure_resolver_reference`) that locates a reference via `just_dna_compiler.cache` and, if
+  absent, downloads the parquet cache from HF into the just-dna-lite layout — resolution itself is
+  the library's inject-only `resolve_variants`. Duplicate compiler/spec tests were removed
+  (library-owned). Next: `just_dna_registry.RegistryClient` integration (publish/download),
+  replacing the bespoke HF `modules.py` downloader. See Observations below.
 
 ## Observations from the just-dna-lite integration (2026-07-06)
 
@@ -436,6 +445,35 @@ Surfaced while repointing just-dna-pipelines at the libs — flagged here so `-m
    derives its benefit colour/sign from `state` treating `protective`→beneficial, `risk`→risk, and
    everything else (incl. `significant`) as neutral, with a numeric `weight` taking precedence when
    present — so weight-less protective modules render correctly without a fabricated effect size.
+
+## Observations from the just-dna-agents integration (2026-07-10)
+
+Surfaced while retiring just-dna-agents' duplicate spec/compiler and repointing it at the libs —
+flagged here so the format owners can schedule the two authoring-support suggestions.
+
+1. **No spec divergence to upstream.** just-dna-agents' local schema was a strict *subset* of the
+   0.1 format, already superseded here: its `PMID_PATTERN` validator was **commented out** (only a
+   non-empty check — the 0.2.0 tightening already covers this), `VALID_PRIORITIES` was **dead** (no
+   validator referenced it — matches Obs #2), and its `ALLELE_PATTERN` used `re.IGNORECASE` (accepted
+   lowercase alleles). The library is a strict superset (0.3 columns, manifest emission, widened
+   genotype, graceful inject-only resolution), so the migration only *removed* code — nothing needed
+   to be added to the format. The repo's fixtures already conform to the stricter library rules
+   (all PMIDs digit-only; alleles uppercase).
+
+2. **Suggestion — ship a canonical, LLM/machine-facing authoring reference.** The agents' MCP server
+   hard-codes a `SPEC_FORMAT_REFERENCE` string (a prose summary of the DSL: columns, vocab, genome
+   build) via a `get_spec_format` tool, and the agents repo also duplicates the column list in a
+   workflow file. This kind of summary **drifts** from the real schema (it predated the 0.3 columns).
+   Consider exporting a single source of truth from `just_dna_format` — e.g. a
+   `spec.authoring_reference()` string and/or a generated JSON Schema — so every consumer (MCP
+   servers, docs, agents) renders the *current* field set instead of re-typing it.
+
+3. **Suggestion — ship a curated icon/color palette for authoring.** The agents' MCP exposes
+   `list_icons` / `list_colors` (curated `{glyph|hex: semantic use}` maps) to help an LLM pick module
+   display metadata. The format has `Display` (`icon`/`icon_set`/`color`) + `VALID_ICON_SETS` +
+   `COLOR_PATTERN`, but **no recommended enumerated palette**, so each authoring tool invents one.
+   A small optional `Display.RECOMMENDED_ICONS` / `RECOMMENDED_COLORS` (or a helper module) would let
+   authoring UIs share one palette without hardcoding.
 
 ## The 1.0 cleanup (candidate tracker)
 

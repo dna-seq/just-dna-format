@@ -58,11 +58,13 @@ def test_validate_empty_dir(tmp_path: Path) -> None:
     assert any("module_spec.yaml not found" in e for e in result.errors)
 
 
-def test_validate_missing_variants(tmp_path: Path) -> None:
+def test_validate_no_table_kind_rejected(tmp_path: Path) -> None:
+    # variants.csv is optional now (RM2 composition), but a module with NO recognized table kind
+    # (only module_spec.yaml here) is still rejected.
     (tmp_path / "module_spec.yaml").write_text(yaml.dump(_MODULE_YAML))
     result = validate_spec(tmp_path)
     assert not result.valid
-    assert any("variants.csv not found" in e for e in result.errors)
+    assert any("no recognized table" in e for e in result.errors)
 
 
 def test_validate_malformed_row(tmp_path: Path) -> None:

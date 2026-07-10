@@ -143,13 +143,11 @@ deferred with the rest of 0.4.
 
 ### 3a. SNP + PRS in one module
 
-**Verdict: SCHEMA-READY / COMPILER-PENDING.** A module is a *directory of CSVs*; nothing stops it
-carrying both `variants.csv` (`VariantRow`) and `pgs.csv` (`PgsRow`), joined on the shared
-`trait_efo_id` (item 5) so a variant panel and its PRS companion sit in one content-addressed unit.
-Both models exist and validate. **Missing:** the compiler currently loads only
-`variants.csv`/`studies.csv` (`_INPUT_FILES`) and emits three parquets — it must learn the new table
-kinds and emit their parquets. That is the single deferred compiler-materialization gap, plus a small
-"a module may declare multiple table kinds" wiring `→ RM1`, `→ RM2`. No *schema* blocker.
+**Verdict: ENABLED (RM1 + RM2 shipped).** A module is a *directory of CSVs* carrying both
+`variants.csv` (`VariantRow`) and `pgs.csv` (`PgsRow`), joined on the shared `trait_efo_id` (item 5) so
+a variant panel and its PRS companion sit in one content-addressed unit. The compiler now materializes
+every present table kind to parquet (round-trip lossless) and treats `variants.csv` as optional, so
+composed and single-domain modules both compile. No blocker.
 
 *Composition principle (settled during the PharmGKB decision, now in CLAUDE.md): a module composes
 from **optional** table kinds — one CSV = one concern — so the SNP core (`variants.csv`+`studies.csv`)
@@ -168,12 +166,11 @@ repeat binning tables (dosage/count, not sequence) or await a symbolic-allele re
 
 ### 3c. SNP + PRS + PGx + CNV in one "personal panel"
 
-**Verdict: SCHEMA-READY / COMPILER-PENDING.** The generalization of 3a: a personal/curated module
-mixing a `variants.csv`, a `pgs.csv`, `activity_phenotype.csv`/`diplotypes.csv`, and
-`copynumbers.csv`, all joined on `trait_efo_id`, is expressible in the schema. Same gaps as 3a
-(`→ RM1`, `→ RM2`). This is exactly the "personal module re-checked deterministically on every
-pipeline change" the verification harness (§1a) wants — and it shows why RM1/RM2 are the load-bearing
-enablers once the shapes freeze.
+**Verdict: ENABLED (RM1 + RM2 shipped).** The generalization of 3a: a personal/curated module mixing
+`variants.csv`, `pgs.csv`, `activity_phenotype.csv`/`diplotypes.csv`, and `copynumbers.csv`, all joined
+on `trait_efo_id`, compiles today — each present kind materializes to parquet with round-trip. This is
+exactly the "personal module re-checked deterministically on every pipeline change" the verification
+harness (§1a) wants — and RM1/RM2 are what unlocked it.
 
 ---
 
@@ -184,8 +181,8 @@ consumer-side one is recorded so it is not mistaken for a format task.
 
 | # | Item | Kind | Unblocks | Priority |
 |---|---|---|---|---|
-| RM1 | **Compiler materialization** of the 0.4 tables (binning/pgx/pgs) → parquet + lossless round-trip | format (compiler) | 3a, 3c, harness on binned loci | high (post-freeze) |
-| RM2 | **Multi-table modules** — a module dir declares/loads several table kinds together (join on `trait_efo_id`); widen `_INPUT_FILES`/`_OUTPUT_FILES` | format (compiler) | SNP+PRS, personal panels | high (with RM1) |
+| RM1 | ✅ **shipped** — compiler materializes all 0.4 tables → parquet with lossless round-trip (generic `_build_table`/`_write_table_csv` over `_TABLE_KINDS`) | format (compiler) | 3a, 3c, harness on binned loci | done |
+| RM2 | ✅ **shipped** — composed modules: `variants.csv` optional, a module carries only the kinds it uses (no empty `variants.csv`); `studies.csv` required iff variants present | format (compiler) | SNP+PRS, personal panels | done |
 | RM3 | ✅ **shipped in 0.4 sample** — `PharmVariantRow` (`pharm_variants.csv`) + `drug`/`response`/`evidence_level` on `DiplotypeRow` | format (schema) | 2b | done |
 | RM4 | **Native ClinVar gene-panel materialization** + content-pinned reference mixin (item 7 follow-up) | format (compiler) + consumer ref | 2a (native path) | medium |
 | RM5 | **Symbolic/structural alleles** (`<S>`/`<L>`/`<DEL>`/`<INS>`/`<DUP>`/`<STR>`; large indels) — a representation beyond `^[ACGT]+$`. **Motivating case: 5-HTTLPR** (S/L not nucleotides → rejected today) | format (schema) | 3b (SV), 1b (symbolic consume), 5-HTTLPR | medium |
@@ -195,8 +192,9 @@ consumer-side one is recorded so it is not mistaken for a format task.
 | RM9 | ✅ **shipped in 0.4 sample** — `manifest.RECOMMENDED_COLORS`/`RECOMMENDED_ICONS` | format (schema) | 1d palette | done |
 | RM10 | Optional declarative inheritance-expectation field (trio/de-novo assertion as data) | format (schema) | 1c trio | low (only if needed) |
 
-**Takeaway.** The two load-bearing gaps are **RM1 + RM2** (compiler materialization + multi-table
-modules) — they turn the frozen 0.4 shapes into runnable artifacts and unlock every composite/personal
-module and the verification harness on binned loci. Everything else is either already enabled, cleanly
-consumer-side, or a small additive column. Notably, the format's *purpose expansion* (the verification
-harness) needs **no format change** — it rides on properties already frozen.
+**Takeaway.** The two load-bearing items — **RM1 + RM2** (compiler materialization + composed
+modules) — are now **shipped**: the frozen 0.4 shapes are runnable artifacts, and every
+composite/personal module compiles with lossless round-trip. What remains open is small and clearly
+scoped: RM3-adjacent extensions, RM5 (symbolic alleles / 5-HTTLPR), and RM6/RM10 refinements. Notably,
+the format's *purpose expansion* (the verification harness) still needs **no format change** — it rides
+on the properties already frozen, now with the tables materialized under it.

@@ -40,27 +40,27 @@ form of those.
 2. **`effect_allele` strand/ref reconciliation.** The column is validated (nucleotides) and passed
    through; the compiler does not reconcile it against `ref`/`alts` or normalize strand. The `+`
    strand / `genome_build` assumption is documentation, not an enforced computation.
-3. **0.4 materialization** — the diplotype/haplotype, copy-number, repeat, heteroplasmy, activity,
-   and PGS tables are **modeled and schema-validated** in `just_dna_format.{binning,pgx,pgs}` (a
-   sample implementation; see `schema/tests/test_v04.py` and `docs/REFERENCE_EXAMPLES.md`), but the
-   compiler does **not** yet materialize them into parquet — deferred until the shapes freeze after
-   round-2 (rebuilding the parquet/round-trip path mid-ping-pong would be wasted). The integration
-   points are known and small: add each parquet name to `_OUTPUT_FILES` (which alone wires
-   `artifact.digest`), a `_build_binning()`-style builder per the `_build_weights` records+schema
-   pattern, source CSVs in `_INPUT_FILES`, and a reverse `_write_*_csv` path in `reverse_module`.
-   Because none of that is built yet, **`artifact.digest` is unchanged by the 0.4 sample.**
+3. **0.4 materialization — DONE (RM1 + RM2).** The diplotype/haplotype, copy-number, repeat,
+   heteroplasmy, activity, PGS, and PharmGKB tables now **materialize to parquet with lossless
+   round-trip** via a generic model-driven materializer (`_build_table`/`_write_table_csv`, driven by
+   each model's `model_fields`), registered in `_TABLE_KINDS`. A module **composes from optional table
+   kinds** (RM2): the only always-present file is `module_spec.yaml`; `variants.csv` is optional, and a
+   module with no variants (a PGx/PharmGKB/PRS-only module) compiles and reverses without an empty
+   `variants.csv`. Grounding (`studies.csv`) is required iff `variants.csv` is present. **`artifact.digest`
+   moved once** off the old `weights`-only value because `weights.parquet` gained the three 0.4
+   `VariantRow` axes — expected (0.4 unpublished); determinism + round-trip are the held invariants.
 
-## 0.4 schema coverage (sample — validated, not yet materialized)
+## 0.4 compiler coverage (materialized)
 
-| 0.4 kind (model) | Validated | Materialized (→ parquet) | Status |
+| 0.4 kind (model) | Validated | Materialized (→ parquet, round-trip) | Status |
 |---|---|---|---|
-| binning primitive `MeasureBinRow` + `Activity/CopyNumber/RepeatAllele/Heteroplasmy` rows | ✅ shared vocab, inclusive `[min,max]`, mandatory `unresolved`, `extra=forbid`, `source_field` pointer, heteroplasmy `tissue` + legacy-ref guard | ⛔ deferred | schema sample |
-| table-level `validate_bins(rows)` (overlap reject / gap warn) | ✅ per `(key…, trait_efo_id)` group | n/a (author-time check) | schema sample |
-| PGx `HaplotypeRow` / `AlleleFunctionRow` (star-string verbatim) / `DiplotypeRow` (canonical pair, + optional `drug`/`response`/`evidence_level`) | ✅ | ⛔ deferred | schema sample |
-| PharmGKB `PharmVariantRow` (`pharm_variants.csv`; single-variant drug response, `evidence_level` 1A…4) | ✅ | ⛔ deferred | schema sample |
-| `VariantRow` general axes: `requires_callable` / `acmg_sf` / `actionability` (optional) | ✅ (`actionability` vs `ACTIONABILITY_SEED`) | ⛔ deferred (not read by `_build_weights`; digest unchanged) | schema sample |
-| PGS `PgsRow` (declared interface; ancestry-validity fields) | ✅ `PGS<digits>`, ancestry/tier vocab, `match_rate∈[0,1]` | ⛔ deferred | schema sample |
-| reserved namespace (`caller*`, `requires_callable`, `callable_from`, `actionability`, `acmg_sf`) | ✅ rejected via `extra=forbid` until built | — | reserved |
+| binning primitive `MeasureBinRow` + `Activity/CopyNumber/RepeatAllele/Heteroplasmy` rows | ✅ shared vocab, inclusive `[min,max]`, mandatory `unresolved`, `extra=forbid`, `source_field` pointer, heteroplasmy `tissue` + legacy-ref guard | ✅ `*.parquet` via generic materializer | **materialized** |
+| table-level `validate_bins(rows)` (overlap reject / gap warn) | ✅ per `(key…, trait_efo_id)` group | n/a (author-time check) | schema |
+| PGx `HaplotypeRow` / `AlleleFunctionRow` (star-string verbatim) / `DiplotypeRow` (+ `drug`/`response`/`evidence_level`) | ✅ | ✅ | **materialized** |
+| PharmGKB `PharmVariantRow` (`pharm_variants.csv`; single-variant drug response, `evidence_level` 1A…4) | ✅ | ✅ | **materialized** |
+| `VariantRow` general axes: `requires_callable` / `acmg_sf` / `actionability` (optional) | ✅ (`actionability` vs `ACTIONABILITY_SEED`) | ✅ into `weights.parquet` (bespoke; tri-state bool round-trip) | **materialized** |
+| PGS `PgsRow` (declared interface; ancestry-validity fields) | ✅ `PGS<digits>`, ancestry/tier vocab, `match_rate_floor∈[0,1]` | ✅ | **materialized** |
+| reserved namespace (`caller` / `caller_version` / `reference_db` / `callable_from`) | ✅ rejected via `extra=forbid` until built | — | reserved |
 | authoring reference + palette (`reference.authoring_reference()`/`json_schemas()`, `RECOMMENDED_COLORS`/`RECOMMENDED_ICONS`) | ✅ generated from the live models (drift-proof) | n/a (schema helper) | **shipped** (RM8/RM9) |
 
 ## Upgrade derivation (`state`/booleans → 0.3 axes)

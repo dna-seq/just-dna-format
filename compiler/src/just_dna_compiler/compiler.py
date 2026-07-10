@@ -13,10 +13,11 @@ The DSL/manifest schema comes from `just-dna-format`; this package is the transf
 import csv
 import re
 import shutil
+import types
 from datetime import datetime, timezone
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Optional, Union, get_args, get_origin
 
 import polars as pl
 import yaml
@@ -33,8 +34,21 @@ from just_dna_format.manifest import (
     Stats,
     write_manifest,
 )
+from just_dna_format.binning import (
+    ActivityPhenotypeRow,
+    CopyNumberRow,
+    HeteroplasmyRow,
+    RepeatAlleleRow,
+)
+from just_dna_format.pgs import PgsRow
+from just_dna_format.pgx import (
+    AlleleFunctionRow,
+    DiplotypeRow,
+    HaplotypeRow,
+    PharmVariantRow,
+)
 from just_dna_format.spec import RESERVED_FLAGS, ModuleSpecConfig, StudyRow, VariantRow
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 
 from just_dna_compiler.models import CompilationResult, ValidationResult
 
@@ -50,11 +64,112 @@ def _split_genotype(genotype: str) -> list[str]:
     slash-separated (unphased), and pipe-separated (phased) forms."""
     return [allele for allele in _GENOTYPE_SEP.split(genotype) if allele]
 
-_INPUT_FILES: tuple[str, ...] = ("module_spec.yaml", "variants.csv", "studies.csv")
-_OUTPUT_FILES: tuple[str, ...] = ("weights.parquet", "annotations.parquet", "studies.parquet")
+# The 0.4 table kinds (RM1): (authored CSV, compiled parquet, row model). Each is optional — a module
+# includes only the kinds it uses (RM2 composition). `file_entries`/`build_artifact` skip absent files,
+# so listing every kind in the file tuples below hashes exactly those a module actually has.
+_TABLE_KINDS: tuple[tuple[str, str, type[BaseModel]], ...] = (
+    ("activity_phenotype.csv", "activity_phenotype.parquet", ActivityPhenotypeRow),
+    ("copynumbers.csv", "copynumbers.parquet", CopyNumberRow),
+    ("repeat_alleles.csv", "repeat_alleles.parquet", RepeatAlleleRow),
+    ("heteroplasmy.csv", "heteroplasmy.parquet", HeteroplasmyRow),
+    ("haplotypes.csv", "haplotypes.parquet", HaplotypeRow),
+    ("allele_function.csv", "allele_function.parquet", AlleleFunctionRow),
+    ("diplotypes.csv", "diplotypes.parquet", DiplotypeRow),
+    ("pgs.csv", "pgs.parquet", PgsRow),
+    ("pharm_variants.csv", "pharm_variants.parquet", PharmVariantRow),
+)
+_TABLE_KIND_CSVS: tuple[str, ...] = tuple(csv for csv, _, _ in _TABLE_KINDS)
+
+_INPUT_FILES: tuple[str, ...] = (
+    "module_spec.yaml",
+    "variants.csv",
+    "studies.csv",
+    *_TABLE_KIND_CSVS,
+)
+_OUTPUT_FILES: tuple[str, ...] = (
+    "weights.parquet",
+    "annotations.parquet",
+    "studies.parquet",
+    *(parquet for _, parquet, _ in _TABLE_KINDS),
+)
 # Optional structured-provenance document authored beside the spec (ROADMAP item 1). Hashed and
 # shipped like logs, kept OUT of `artifact.digest` (it is not in `_OUTPUT_FILES`).
 _PROVENANCE_FILE: str = "provenance.json"
+
+
+# ── Generic model-driven materializer (RM1) ────────────────────────────────────────────────────
+# The 0.4 tables are flat (scalars + one list[str]), so one materializer driven by the model's
+# `model_fields` covers all nine kinds — mirroring the `_build_studies`/`_write_studies_csv` shape.
+# VariantRow's genotype/phase complexity keeps its bespoke path.
+def _strip_optional(annotation: Any) -> Any:
+    """`Optional[X]` / `X | None` → `X`; other annotations unchanged."""
+    if get_origin(annotation) in (Union, types.UnionType):
+        args = [a for a in get_args(annotation) if a is not type(None)]
+        if len(args) == 1:
+            return args[0]
+    return annotation
+
+
+def _polars_type(annotation: Any) -> pl.DataType:
+    """Map a (possibly Optional) model-field annotation to a polars dtype. `bool` before `int`
+    because `bool` is an `int` subclass."""
+    base = _strip_optional(annotation)
+    if base is bool:
+        return pl.Boolean
+    if base is int:
+        return pl.Int64
+    if base is float:
+        return pl.Float64
+    if get_origin(base) is list:
+        return pl.List(pl.Utf8)
+    return pl.Utf8
+
+
+def _list_fields(model: type[BaseModel]) -> set[str]:
+    """Field names whose (stripped) annotation is a `list[...]` — rendered join-separated in CSV."""
+    return {
+        name
+        for name, f in model.model_fields.items()
+        if get_origin(_strip_optional(f.annotation)) is list
+    }
+
+
+def _build_table(rows: list[Any], model: type[BaseModel], module_name: str) -> pl.DataFrame:
+    """A binning/PGx/PGS table → parquet. Carries a `module` column (like weights/studies) so
+    `reverse_module` can recover the module name from any present parquet."""
+    schema: dict[str, Any] = {"module": pl.Utf8}
+    for name, f in model.model_fields.items():
+        schema[name] = _polars_type(f.annotation)
+    records = [{"module": module_name, **row.model_dump()} for row in rows]
+    return pl.DataFrame(records, schema=schema)
+
+
+def _bool_cell(value: Optional[bool]) -> str:
+    """Render a tri-state Optional[bool] to a CSV cell: True→'true', False→'false', None→''."""
+    return "" if value is None else ("true" if value else "false")
+
+
+def _write_table_csv(df: pl.DataFrame, model: type[BaseModel], path: Path) -> None:
+    """Reverse of `_build_table`: parquet → the authored CSV. Drops the injected `module` column
+    (not authored); renders None→"", list→pipe-joined, bool→"true"/"false" (tri-state fidelity)."""
+    fieldnames = list(model.model_fields.keys())
+    list_fields = _list_fields(model)
+    with open(path, "w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        for row in df.iter_rows(named=True):
+            out: dict[str, str] = {}
+            for name in fieldnames:
+                value = row.get(name)
+                if value is None:
+                    out[name] = ""
+                elif name in list_fields:
+                    out[name] = "|".join(value) if value else ""
+                elif isinstance(value, bool):
+                    out[name] = "true" if value else "false"
+                else:
+                    out[name] = str(value)
+            writer.writerow(out)
 
 
 def _compiler_version() -> str:
@@ -312,12 +427,40 @@ def validate_spec(spec_dir: Path) -> ValidationResult:
     config, yaml_errors = _load_yaml(spec_dir / "module_spec.yaml")
     all_errors.extend(yaml_errors)
 
-    variants, var_errors, var_warnings = _load_csv_rows(
-        spec_dir / "variants.csv", VariantRow, "variants.csv"
-    )
-    all_errors.extend(var_errors)
-    all_warnings.extend(var_warnings)
+    # A module composes from optional table kinds (RM2): variants.csv is no longer mandatory — a PGx /
+    # PharmGKB / PRS module carries only its own table(s). Load whatever is present.
+    variants_path = spec_dir / "variants.csv"
+    has_variants = variants_path.exists()
+    variants: list[VariantRow] = []
+    if has_variants:
+        variants, var_errors, var_warnings = _load_csv_rows(
+            variants_path, VariantRow, "variants.csv"
+        )
+        all_errors.extend(var_errors)
+        all_warnings.extend(var_warnings)
 
+    # Validate each present 0.4 table kind against its model.
+    kind_row_counts: dict[str, int] = {}
+    for csv_name, _parquet, model in _TABLE_KINDS:
+        kind_path = spec_dir / csv_name
+        if not kind_path.exists():
+            continue
+        rows, kind_errors, kind_warnings = _load_csv_rows(kind_path, model, csv_name)
+        all_errors.extend(kind_errors)
+        all_warnings.extend(kind_warnings)
+        kind_row_counts[csv_name] = len(rows)
+        if not rows and not kind_errors:
+            all_errors.append(f"{csv_name} is present but has no rows.")
+
+    # Composition: a module must carry at least one recognized table kind.
+    if not has_variants and not kind_row_counts:
+        all_errors.append(
+            "module has no recognized table: add variants.csv or a 0.4 table "
+            "(e.g. pharm_variants.csv, diplotypes.csv, pgs.csv)."
+        )
+
+    # Grounding (studies) is mandatory for *variant* annotations, so it is required iff variants.csv
+    # is present. The 0.4 tables carry their own evidence (e.g. evidence_level) and do not require it.
     studies_path = spec_dir / "studies.csv"
     studies: list[StudyRow] = []
     if studies_path.exists():
@@ -330,7 +473,7 @@ def validate_spec(spec_dir: Path) -> ValidationResult:
             all_errors.append(
                 "studies.csv is present but has no study rows. Grounding evidence is mandatory."
             )
-    else:
+    elif has_variants:
         all_errors.append(
             "studies.csv is missing. Grounding evidence is mandatory; add study rows with PMIDs."
         )
@@ -354,25 +497,28 @@ def validate_spec(spec_dir: Path) -> ValidationResult:
                 f"{sorted(RESERVED_FLAGS)}): {unknown_flags}"
             )
 
-    stats: dict[str, Any] = {}
+    stats: dict[str, Any] = {"study_count": len(studies)}
+    if config:
+        stats["module_name"] = config.module.name
+    if kind_row_counts:
+        stats["table_rows"] = kind_row_counts
     if variants:
         variant_keys_set = {v.variant_key for v in variants}
         genes = sorted({v.gene for v in variants if v.gene})
         categories = sorted({v.category for v in variants if v.category})
-        stats = {
-            "variant_count": len(variant_keys_set),
-            "unique_rsids": len({v.rsid for v in variants if v.rsid is not None}),
-            "gene_count": len(genes),
-            "genes": genes,
-            "categories": categories,
-            "study_count": len(studies),
-            # ClinVar/quality flag counts over variant rows (ROADMAP item 5).
-            "clinvar_count": sum(1 for v in variants if v.clinvar),
-            "pathogenic_count": sum(1 for v in variants if v.pathogenic),
-            "benign_count": sum(1 for v in variants if v.benign),
-        }
-        if config:
-            stats["module_name"] = config.module.name
+        stats.update(
+            {
+                "variant_count": len(variant_keys_set),
+                "unique_rsids": len({v.rsid for v in variants if v.rsid is not None}),
+                "gene_count": len(genes),
+                "genes": genes,
+                "categories": categories,
+                # ClinVar/quality flag counts over variant rows (ROADMAP item 5).
+                "clinvar_count": sum(1 for v in variants if v.clinvar),
+                "pathogenic_count": sum(1 for v in variants if v.pathogenic),
+                "benign_count": sum(1 for v in variants if v.benign),
+            }
+        )
 
     return ValidationResult(
         valid=len(all_errors) == 0,
@@ -425,28 +571,46 @@ def compile_module(
 
     config, _ = _load_yaml(spec_dir / "module_spec.yaml")
     assert config is not None
-    variants, _, _ = _load_csv_rows(spec_dir / "variants.csv", VariantRow, "variants.csv")
+    module_name = config.module.name
+
+    # A module composes from optional table kinds (RM2): load whatever is present.
+    variants: list[VariantRow] = []
+    if (spec_dir / "variants.csv").exists():
+        variants, _, _ = _load_csv_rows(spec_dir / "variants.csv", VariantRow, "variants.csv")
     studies: list[StudyRow] = []
     if (spec_dir / "studies.csv").exists():
         studies, _, _ = _load_csv_rows(spec_dir / "studies.csv", StudyRow, "studies.csv")
 
     all_warnings = list(validation.warnings)
-    if resolve_with_ensembl:
+    if resolve_with_ensembl and variants:
         from just_dna_compiler.resolver import resolve_variants
 
         variants, resolve_warnings = resolve_variants(variants, ensembl_cache)
         all_warnings.extend(resolve_warnings)
 
-    module_name = config.module.name
-    weights_df = _build_weights(variants, config)
-    annotations_df = _build_annotations(variants, module_name)
-    studies_df = _build_studies(studies, module_name) if studies else None
-
     output_dir.mkdir(parents=True, exist_ok=True)
-    weights_df.write_parquet(output_dir / "weights.parquet", compression=compression)
-    annotations_df.write_parquet(output_dir / "annotations.parquet", compression=compression)
+
+    # SNP core: weights/annotations only when the module actually has variants.
+    weights_df = _build_weights(variants, config) if variants else None
+    annotations_df = _build_annotations(variants, module_name) if variants else None
+    studies_df = _build_studies(studies, module_name) if studies else None
+    if weights_df is not None:
+        weights_df.write_parquet(output_dir / "weights.parquet", compression=compression)
+    if annotations_df is not None:
+        annotations_df.write_parquet(output_dir / "annotations.parquet", compression=compression)
     if studies_df is not None:
         studies_df.write_parquet(output_dir / "studies.parquet", compression=compression)
+
+    # 0.4 table kinds (RM1): materialize each present CSV via the generic materializer.
+    table_rows: dict[str, int] = {}
+    for csv_name, parquet_name, model in _TABLE_KINDS:
+        kind_path = spec_dir / csv_name
+        if not kind_path.exists():
+            continue
+        rows, _, _ = _load_csv_rows(kind_path, model, csv_name)
+        table_df = _build_table(rows, model, module_name)
+        table_df.write_parquet(output_dir / parquet_name, compression=compression)
+        table_rows[parquet_name] = table_df.height
 
     logs = _collect_logs(spec_dir, output_dir, log_files)
     provenance = _collect_provenance(spec_dir, output_dir, provenance_file)
@@ -456,7 +620,7 @@ def compile_module(
         spec_dir=spec_dir,
         output_dir=output_dir,
         validation=validation,
-        weights_rows=weights_df.height,
+        weights_rows=weights_df.height if weights_df is not None else 0,
         warnings=all_warnings,
         compiled_by=compiled_by,
         ensembl_reference=ensembl_reference,
@@ -468,9 +632,10 @@ def compile_module(
 
     stats: dict[str, Any] = {
         "module_name": module_name,
-        "weights_rows": weights_df.height,
-        "annotations_rows": annotations_df.height,
+        "weights_rows": weights_df.height if weights_df is not None else 0,
+        "annotations_rows": annotations_df.height if annotations_df is not None else 0,
         "studies_rows": studies_df.height if studies_df is not None else 0,
+        "table_rows": table_rows,
     }
     return CompilationResult(
         success=True,
@@ -586,6 +751,10 @@ def _build_weights(variants: list[VariantRow], config: ModuleSpecConfig) -> pl.D
                 "flags": v.flags,
                 "trait_efo_id": v.trait_efo_id,
                 "clin_sig": v.clin_sig,
+                # ── 0.4 general annotation axes (materialized passthrough). ──
+                "requires_callable": v.requires_callable,
+                "acmg_sf": v.acmg_sf,
+                "actionability": v.actionability,
             }
         )
     schema = {
@@ -618,6 +787,9 @@ def _build_weights(variants: list[VariantRow], config: ModuleSpecConfig) -> pl.D
         "flags": pl.List(pl.Utf8),
         "trait_efo_id": pl.Utf8,
         "clin_sig": pl.Utf8,
+        "requires_callable": pl.Boolean,
+        "acmg_sf": pl.Boolean,
+        "actionability": pl.Utf8,
     }
     return pl.DataFrame(records, schema=schema)
 
@@ -688,6 +860,22 @@ def _build_studies(studies: list[StudyRow], module_name: str) -> pl.DataFrame:
 # ── Reverse engineering ────────────────────────────────────────────────────────
 
 
+def _module_name_from_parquets(parquet_dir: Path) -> Optional[str]:
+    """Recover the module name from the `module` column of the first present parquet — so a module
+    with no `weights.parquet` (a PGx/PharmGKB/PRS-only module) still reverses (RM2)."""
+    for name in ("weights.parquet", "annotations.parquet", "studies.parquet", *(
+        parquet for _, parquet, _ in _TABLE_KINDS
+    )):
+        path = parquet_dir / name
+        if path.is_file():
+            df = pl.read_parquet(path)
+            if "module" in df.columns:
+                values = df["module"].drop_nulls().unique().to_list()
+                if values:
+                    return values[0]
+    return None
+
+
 def reverse_module(
     parquet_dir: Path,
     output_dir: Path,
@@ -703,25 +891,23 @@ def reverse_module(
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    weights_df = pl.read_parquet(parquet_dir / "weights.parquet")
+    # SNP core is optional (RM2): a module may have no weights.parquet.
+    weights_path = parquet_dir / "weights.parquet"
+    weights_df = pl.read_parquet(weights_path) if weights_path.is_file() else None
+
     if module_name is None:
-        if "module" in weights_df.columns:
-            module_name = weights_df["module"].drop_nulls().unique().to_list()[0]
-        else:
-            module_name = parquet_dir.name
+        module_name = _module_name_from_parquets(parquet_dir) or parquet_dir.name
 
-    default_curator = _most_common(weights_df, "curator") or "unknown"
-    default_method = _most_common(weights_df, "method") or "unknown"
+    default_curator = "unknown"
+    default_method = "unknown"
     default_priority: Optional[str] = None
-    if "priority" in weights_df.columns:
-        non_null = weights_df["priority"].drop_nulls()
-        if non_null.len() > 0:
-            default_priority = non_null.mode().to_list()[0]
-
-    annotations_df: Optional[pl.DataFrame] = None
-    ann_path = parquet_dir / "annotations.parquet"
-    if ann_path.exists():
-        annotations_df = pl.read_parquet(ann_path)
+    if weights_df is not None:
+        default_curator = _most_common(weights_df, "curator") or "unknown"
+        default_method = _most_common(weights_df, "method") or "unknown"
+        if "priority" in weights_df.columns:
+            non_null = weights_df["priority"].drop_nulls()
+            if non_null.len() > 0:
+                default_priority = non_null.mode().to_list()[0]
 
     defaults_dict: dict[str, Any] = {"curator": default_curator, "method": default_method}
     if default_priority is not None:
@@ -744,22 +930,31 @@ def reverse_module(
         yaml.dump(spec, default_flow_style=False, sort_keys=False), encoding="utf-8"
     )
 
-    ann_lookup: dict[str, dict[str, str]] = {}
-    if annotations_df is not None:
-        for row in annotations_df.iter_rows(named=True):
-            ann_lookup[row["rsid"]] = {
-                "gene": row.get("gene", ""),
-                "phenotype": row.get("phenotype", ""),
-                "category": row.get("category", ""),
-            }
-
-    _write_variants_csv(
-        weights_df, ann_lookup, default_curator, default_method, default_priority,
-        output_dir / "variants.csv",
-    )
+    # variants.csv + studies.csv only when the module has them.
+    if weights_df is not None:
+        ann_lookup: dict[str, dict[str, str]] = {}
+        ann_path = parquet_dir / "annotations.parquet"
+        if ann_path.exists():
+            for row in pl.read_parquet(ann_path).iter_rows(named=True):
+                ann_lookup[row["rsid"]] = {
+                    "gene": row.get("gene", ""),
+                    "phenotype": row.get("phenotype", ""),
+                    "category": row.get("category", ""),
+                }
+        _write_variants_csv(
+            weights_df, ann_lookup, default_curator, default_method, default_priority,
+            output_dir / "variants.csv",
+        )
     studies_path = parquet_dir / "studies.parquet"
     if studies_path.exists():
         _write_studies_csv(pl.read_parquet(studies_path), output_dir / "studies.csv")
+
+    # 0.4 table kinds (RM1): each present parquet → its authored CSV.
+    for csv_name, parquet_name, model in _TABLE_KINDS:
+        kind_path = parquet_dir / parquet_name
+        if kind_path.is_file():
+            _write_table_csv(pl.read_parquet(kind_path), model, output_dir / csv_name)
+
     return output_dir
 
 
@@ -789,6 +984,8 @@ def _write_variants_csv(
         # 0.3 additive columns
         "direction", "stat_significance", "effect_size", "effect_measure", "effect_allele",
         "flags", "trait_efo_id", "clin_sig",
+        # 0.4 general annotation axes
+        "requires_callable", "acmg_sf", "actionability",
     ]
     with open(output_path, "w", encoding="utf-8", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
@@ -846,6 +1043,10 @@ def _write_variants_csv(
                     "flags": "|".join(flags_list) if flags_list else "",
                     "trait_efo_id": row.get("trait_efo_id") or "",
                     "clin_sig": row.get("clin_sig") or "",
+                    # 0.4 axes: Optional bools are tri-state (True/False/None → true/false/empty).
+                    "requires_callable": _bool_cell(row.get("requires_callable")),
+                    "acmg_sf": _bool_cell(row.get("acmg_sf")),
+                    "actionability": row.get("actionability") or "",
                 }
             )
 
