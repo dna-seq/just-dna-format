@@ -28,7 +28,9 @@ from just_dna_format.pgx import (
     AlleleFunctionRow,
     DiplotypeRow,
     HaplotypeRow,
+    PharmVariantRow,
 )
+from just_dna_format.spec import VariantRow
 from just_dna_format.vocab import RESERVED_NAMES_0_4
 
 
@@ -184,11 +186,56 @@ def test_pgs_vocabularies_are_frozen() -> None:
 
 # ── reserved-namespace boundary + model-level round-trip (Principle 7) ──────────────────────────
 def test_reserved_names_are_rejected_until_built() -> None:
+    # Shrunk to the provenance triple + callable_from; the other three retired into VariantRow columns.
+    assert RESERVED_NAMES_0_4 == frozenset(
+        {"caller", "caller_version", "reference_db", "callable_from"}
+    )
     for name in RESERVED_NAMES_0_4:
         with pytest.raises(ValidationError):
             RepeatAlleleRow(
                 gene="HTT", repeat_unit="CAG", measure_min=40, conclusion="x", **{name: "v"}
             )
+
+
+# ── adoption pass: 3 general axes on VariantRow ─────────────────────────────────────────────────
+def test_variant_row_general_axes() -> None:
+    v = VariantRow(
+        rsid="rs80357906", genotype="A/AT", state="risk", conclusion="BRCA1 pathogenic",
+        gene="BRCA1", clin_sig="pathogenic",
+        requires_callable=True, acmg_sf=True, actionability="preventable",
+    )
+    assert v.requires_callable and v.acmg_sf and v.actionability == "preventable"
+    with pytest.raises(ValidationError):  # actionability closed-validated against the seed
+        VariantRow(rsid="rs1", genotype="A/G", state="risk", conclusion="x", actionability="bogus")
+    # a plain SNP row still needs none of them (SNP core stays minimal)
+    assert VariantRow(rsid="rs1", genotype="A/G", state="risk", conclusion="x").actionability is None
+
+
+# ── adoption pass: PharmGKB (PharmVariantRow + DiplotypeRow columns) ─────────────────────────────
+def test_pharm_variant_row() -> None:
+    p = PharmVariantRow(
+        rsid="rs9923231", gene="VKORC1", drug="warfarin",
+        response="reduced dose requirement", evidence_level="1A", conclusion="lower warfarin dose",
+    )
+    assert p.drug == "warfarin" and p.evidence_level == "1A" and p.variant_key == "rs9923231"
+    with pytest.raises(ValidationError):
+        PharmVariantRow(gene="VKORC1", drug="warfarin", conclusion="x")  # no identifier
+    with pytest.raises(ValidationError):
+        PharmVariantRow(rsid="rs1", conclusion="x")  # drug required
+    with pytest.raises(ValidationError):
+        PharmVariantRow(rsid="rs1", drug="warfarin", evidence_level="5", conclusion="x")  # bad level
+
+
+def test_diplotype_row_pharm_columns() -> None:
+    d = DiplotypeRow(
+        gene="CYP2D6", haplotype_a="*1", haplotype_b="*4", phenotype="IM",
+        conclusion="reduced codeine activation", drug="codeine",
+        response="reduced analgesia", evidence_level="1A",
+    )
+    assert d.drug == "codeine" and d.evidence_level == "1A"
+    with pytest.raises(ValidationError):
+        DiplotypeRow(gene="CYP2D6", haplotype_a="*1", haplotype_b="*4", conclusion="x",
+                     evidence_level="9")
 
 
 def test_model_level_roundtrip_is_lossless_and_idempotent() -> None:

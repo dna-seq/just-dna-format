@@ -128,14 +128,14 @@ native path a convenience/quality follow-up.
 
 ### 2b. PharmGKB drug-response annotation (item 9)
 
-**Verdict: GAP (additive columns).** A PharmGKB row maps a variant/diplotype → a **drug** + a
-**response/phenotype** + a PharmGKB **evidence level** (1A…4) — a different axis from a risk weight.
-`drug`/`response`/`evidence_level` are **reserved names**, not built. **Missing:** add them as optional
-columns on the PGx allele-function/diplotype tables (or a sibling `PharmVariantRow`) `→ RM3`. Note
-`evidence_level` is a *third* significance-flavoured axis, distinct from `stat_significance` and
-`clin_sig` — it needs its own explicit name (the orthogonal-axes discipline, Principle 5), not
-overloading. The PGx star-allele tables (`pgx.py`) are the natural host: the same rows gain the drug
-columns.
+**Verdict: ADOPTED (RM3, shipped in the 0.4 sample).** A PharmGKB row maps a variant/diplotype → a
+**drug** + a **response/phenotype** + a PharmGKB **evidence level** (`1A`…`4`, `VALID_EVIDENCE_LEVELS`)
+— a different axis from a risk weight. Built as a **dedicated `PharmVariantRow` (`pharm_variants.csv`)**
+for single-variant drug response (keeps the SNP core clean — one CSV = one concern), plus optional
+`drug`/`response`/`evidence_level` columns on `DiplotypeRow` for the diplotype-keyed case. A PharmGKB
+module has **no empty `variants.csv`**. `evidence_level` is a *third* significance-flavoured axis,
+distinct from `stat_significance`/`clin_sig` (orthogonal-axes discipline, Principle 5). Materialization
+deferred with the rest of 0.4.
 
 ---
 
@@ -150,6 +150,11 @@ Both models exist and validate. **Missing:** the compiler currently loads only
 `variants.csv`/`studies.csv` (`_INPUT_FILES`) and emits three parquets — it must learn the new table
 kinds and emit their parquets. That is the single deferred compiler-materialization gap, plus a small
 "a module may declare multiple table kinds" wiring `→ RM1`, `→ RM2`. No *schema* blocker.
+
+*Composition principle (settled during the PharmGKB decision, now in CLAUDE.md): a module composes
+from **optional** table kinds — one CSV = one concern — so the SNP core (`variants.csv`+`studies.csv`)
+stays minimal and no module ever carries an empty `variants.csv` or a foreign domain's columns just to
+host one table. This is the human-authorable half of the `RM2` work.*
 
 ### 3b. SNP + indels
 
@@ -181,9 +186,9 @@ consumer-side one is recorded so it is not mistaken for a format task.
 |---|---|---|---|---|
 | RM1 | **Compiler materialization** of the 0.4 tables (binning/pgx/pgs) → parquet + lossless round-trip | format (compiler) | 3a, 3c, harness on binned loci | high (post-freeze) |
 | RM2 | **Multi-table modules** — a module dir declares/loads several table kinds together (join on `trait_efo_id`); widen `_INPUT_FILES`/`_OUTPUT_FILES` | format (compiler) | SNP+PRS, personal panels | high (with RM1) |
-| RM3 | **PharmGKB columns** `drug`/`response`/`evidence_level` on the PGx tables (item 9) | format (schema) | 2b | medium |
+| RM3 | ✅ **shipped in 0.4 sample** — `PharmVariantRow` (`pharm_variants.csv`) + `drug`/`response`/`evidence_level` on `DiplotypeRow` | format (schema) | 2b | done |
 | RM4 | **Native ClinVar gene-panel materialization** + content-pinned reference mixin (item 7 follow-up) | format (compiler) + consumer ref | 2a (native path) | medium |
-| RM5 | **Symbolic/structural alleles** (`<DEL>`/`<INS>`/`<DUP>`/`<STR>`; large indels) — a representation beyond `^[ACGT]+$` | format (schema) | 3b (SV), 1b (symbolic consume) | medium |
+| RM5 | **Symbolic/structural alleles** (`<S>`/`<L>`/`<DEL>`/`<INS>`/`<DUP>`/`<STR>`; large indels) — a representation beyond `^[ACGT]+$`. **Motivating case: 5-HTTLPR** (S/L not nucleotides → rejected today) | format (schema) | 3b (SV), 1b (symbolic consume), 5-HTTLPR | medium |
 | RM6 | Promote `requires_callable` to a typed boolean column; reserve/build `callable_from` (DP,GQ,FT three-state) | format (schema) | 1c callability | low-medium |
 | RM7 | **Evaluation-output / report-card schema** for the verification harness | **consumer** (`just-dna-lite`), NOT the format | 1a | — (not a format task) |
 | RM8 | ✅ **shipped in 0.4 sample** — `reference.authoring_reference()` + `json_schemas()`, generated from the live models | format (schema) | 1d drift | done |

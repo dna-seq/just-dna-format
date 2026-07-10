@@ -26,6 +26,7 @@ from just_dna_format.derive import (
 from just_dna_format.identity import validate_name
 from just_dna_format.manifest import SCHEMA_VERSION, Display, GenePanelSpec
 from just_dna_format.vocab import (
+    ACTIONABILITY_SEED,
     ALLELE_PATTERN,
     VALID_CLIN_SIG,
     VALID_DIRECTIONS,
@@ -186,6 +187,30 @@ class VariantRow(BaseModel):
         description="ClinVar/ACMG clinical significance (VEP CLIN_SIG vocabulary).",
     )
 
+    # ── 0.4 general annotation axes (all optional; retired from the reserved namespace) ──
+    # General per-variant refinements — any variant finding may carry them, so they live here rather
+    # than in a domain table. A sparse SNP CSV simply omits them.
+    requires_callable: Optional[bool] = Field(
+        default=None,
+        description=(
+            "True when the *absence* of this variant is the informative call (recessive carrier, "
+            "'pathogenic variant absent' reassurance) — a consumer lacking callability data must "
+            "then withhold the reference/absence conclusion, never assert it (no-call ≠ hom-ref)."
+        ),
+    )
+    acmg_sf: Optional[bool] = Field(
+        default=None, description="True when the gene is on the ACMG secondary-findings list."
+    )
+    actionability: Optional[str] = Field(
+        default=None,
+        description=(
+            "Annotation-level actionability of the finding (ACTIONABILITY_SEED: actionable|"
+            "preventable|pharmacogenomic|incurable|reproductive|descriptive|modifiable). A property "
+            "of the gene–condition–intervention triad a consumer's disclosure policy may read; the "
+            "format never decides disclosure."
+        ),
+    )
+
     @property
     def variant_key(self) -> str:
         """Stable grouping key: rsid when available, else chrom:start:ref."""
@@ -332,6 +357,11 @@ class VariantRow(BaseModel):
     @classmethod
     def _validate_clin_sig(cls, v: Optional[str]) -> Optional[str]:
         return check_vocab(v, VALID_CLIN_SIG, "clin_sig")
+
+    @field_validator("actionability")
+    @classmethod
+    def _validate_actionability(cls, v: Optional[str]) -> Optional[str]:
+        return check_vocab(v, ACTIONABILITY_SEED, "actionability")
 
     @field_validator("effect_allele")
     @classmethod

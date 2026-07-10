@@ -32,6 +32,14 @@ def test_authoring_reference_is_generated_not_hardcoded() -> None:
     assert ref["vocabularies"]["measure_kind"] == sorted(VALID_MEASURE_KINDS)
     assert "callable_from" in ref["reserved_names"]
     assert "descriptive" in ref["open_recommended"]["actionability_seed"]
+    # adoption pass: PharmVariantRow + evidence_level + the VariantRow axes appear (generated)
+    assert "PharmVariantRow" in ref["models"]
+    assert ref["vocabularies"]["evidence_level"] == ["1A", "1B", "2A", "2B", "3", "4"]
+    assert {"requires_callable", "acmg_sf", "actionability"} <= {
+        f["name"] for f in ref["models"]["VariantRow"]
+    }
+    # retired names are no longer reserved (they became VariantRow columns)
+    assert not ({"requires_callable", "acmg_sf", "actionability"} & set(ref["reserved_names"]))
 
 
 def test_authoring_reference_field_records_carry_type_required_description() -> None:

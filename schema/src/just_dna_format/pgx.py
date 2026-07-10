@@ -26,6 +26,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from just_dna_format.vocab import (
     VALID_CLIN_SIG,
     VALID_DIRECTIONS,
+    VALID_EVIDENCE_LEVELS,
     check_vocab,
     validate_allele,
     validate_rsid,
@@ -142,6 +143,14 @@ class DiplotypeRow(BaseModel):
     phenotype: Optional[str] = Field(default=None, description="Metabolizer phenotype, e.g. PM/NM")
     conclusion: str = Field(description="Human-readable interpretation for this diplotype")
 
+    # ── Optional PharmGKB drug context (item 9) — a diplotype → drug response. Diplotype-keyed, so it
+    # rides here; single-variant drug response lives in the separate PharmVariantRow. ──
+    drug: Optional[str] = Field(default=None, description="Drug the response is about, e.g. codeine")
+    response: Optional[str] = Field(default=None, description="Drug response / phenotype, free-form")
+    evidence_level: Optional[str] = Field(
+        default=None, description="PharmGKB clinical-annotation evidence level (1A..4)"
+    )
+
     @field_validator("direction")
     @classmethod
     def _validate_direction(cls, v: Optional[str]) -> Optional[str]:
@@ -151,6 +160,11 @@ class DiplotypeRow(BaseModel):
     @classmethod
     def _validate_clin_sig(cls, v: Optional[str]) -> Optional[str]:
         return check_vocab(v, VALID_CLIN_SIG, "clin_sig")
+
+    @field_validator("evidence_level")
+    @classmethod
+    def _validate_evidence_level(cls, v: Optional[str]) -> Optional[str]:
+        return check_vocab(v, VALID_EVIDENCE_LEVELS, "evidence_level")
 
     @field_validator("trait_efo_id")
     @classmethod
@@ -163,4 +177,62 @@ class DiplotypeRow(BaseModel):
         # of (a, b) and (b, a) hit the same row.
         if self.haplotype_a > self.haplotype_b:
             self.haplotype_a, self.haplotype_b = self.haplotype_b, self.haplotype_a
+        return self
+
+
+class PharmVariantRow(BaseModel):
+    """Single-variant PharmGKB drug-response annotation (item 9) — `pharm_variants.csv`.
+
+    A **distinct rowtype** rather than columns on `VariantRow`, so the SNP core stays free of the
+    drug-response domain: a module includes this table only when it carries drug annotations (one CSV
+    = one concern; no empty `variants.csv`). Diplotype-keyed drug response instead rides on
+    `DiplotypeRow`'s optional drug columns. A row maps a variant → a **drug** → a **response** +
+    a PharmGKB **evidence level** (1A…4) — a different axis from a risk weight (why it is not a
+    `VariantRow`)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    rsid: Optional[str] = Field(default=None, description="dbSNP id of the variant, e.g. rs9923231")
+    chrom: Optional[str] = Field(default=None, description="Chromosome (position-only variants)")
+    start: Optional[int] = Field(default=None, description="0-based position (position-only)")
+    ref: Optional[str] = Field(default=None, description="Reference allele (position-only)")
+    gene: Optional[str] = Field(default=None, description="Gene symbol, e.g. VKORC1")
+    drug: str = Field(description="Drug the response annotation is about, e.g. warfarin")
+    response: Optional[str] = Field(
+        default=None, description="Drug response / phenotype, free-form (e.g. 'reduced dose requirement')"
+    )
+    evidence_level: Optional[str] = Field(
+        default=None, description="PharmGKB clinical-annotation evidence level (1A..4)"
+    )
+    trait_efo_id: Optional[str] = Field(
+        default=None, description="Optional trait ontology id(s), for cross-module join"
+    )
+    conclusion: str = Field(description="Human-readable interpretation")
+
+    @property
+    def variant_key(self) -> str:
+        """Stable key matching VariantRow.variant_key."""
+        if self.rsid is not None:
+            return self.rsid
+        return f"{self.chrom}:{self.start}:{self.ref}"
+
+    @field_validator("rsid")
+    @classmethod
+    def _validate_rsid(cls, v: Optional[str]) -> Optional[str]:
+        return validate_rsid(v)
+
+    @field_validator("evidence_level")
+    @classmethod
+    def _validate_evidence_level(cls, v: Optional[str]) -> Optional[str]:
+        return check_vocab(v, VALID_EVIDENCE_LEVELS, "evidence_level")
+
+    @field_validator("trait_efo_id")
+    @classmethod
+    def _validate_trait_efo_id(cls, v: Optional[str]) -> Optional[str]:
+        return validate_trait_ids(v)
+
+    @model_validator(mode="after")
+    def _validate_identification(self) -> "PharmVariantRow":
+        if self.rsid is None and (self.chrom is None or self.start is None):
+            raise ValueError("a pharm variant needs an identifier: rsid, or chrom + start")
         return self

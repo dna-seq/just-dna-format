@@ -382,3 +382,24 @@ generalization over a practical subset of real data items (an implicit data mode
 empirical footprint), not an all-encompassing model — claiming otherwise would be presumptuous. The
 sample's models are all written to it (they carry ranges, never measurements), and a data item that
 doesn't fit is a schema gap to widen additively.
+
+---
+
+## Post-round-2 adoption pass (final pre-freeze)
+
+Five cheap, additive, clean-annotation items pulled into 0.4 after the drift review, all schema-only
+(compiler still deferred, `artifact.digest` unchanged):
+
+- **`requires_callable`, `acmg_sf`, `actionability`** — retired from the reserved namespace into
+  optional `VariantRow` columns (general per-variant refinements; `actionability` validated against
+  `ACTIONABILITY_SEED`). `RESERVED_NAMES_0_4` shrinks to the provenance triple + `callable_from`.
+- **PharmGKB (item 9)** — a dedicated **`PharmVariantRow` (`pharm_variants.csv`)** for single-variant
+  drug response + `drug`/`response`/`evidence_level` on `DiplotypeRow`. `VariantRow` is untouched by
+  pharm (one CSV = one concern; no empty `variants.csv`).
+- **5-HTTLPR** — *not* adopted: its S/L alleles are not nucleotides, so it is the concrete motivating
+  case for `RM5` (symbolic alleles), a deferred gap.
+
+The provenance triple (`caller`/`caller_version`/`reference_db`) stays **reserved** — it describes a
+consumer's computed *call*, not annotation, so by the data-agnostic north star it is consumer-side.
+This pass also records the **human-authorable ⇔ machine-precise gate** and its one-CSV-one-concern
+corollary in `CLAUDE.md`.

@@ -57,15 +57,22 @@ MULTI_SEP: re.Pattern[str] = re.compile(r"[,;|]")
 # here.
 RESERVED_NAMES_0_4: frozenset[str] = frozenset(
     {
-        "caller",  # T2 — caller provenance triple (round-2: three columns, not one composite)
+        # The provenance triple stays reserved: it describes which tool made a *call* (a consumer's
+        # computed measurement), not annotation — so by the data-agnostic north star it is
+        # consumer-side, never a module column (round-2 Q2).
+        "caller",
         "caller_version",
         "reference_db",
-        "requires_callable",  # A4 — no-call ≠ hom-ref (flag first; round-2: expect a typed column)
         "callable_from",  # round-2 3d/0.5 — VCF-derived three-state callability signal (DP,GQ,FT)
-        "actionability",  # B6 — annotation-level actionability axis (note-only)
-        "acmg_sf",  # B6/round-2 Q9 — ACMG-SF list membership, a separate flag (not an actionability value)
     }
 )
+# NOTE: `requires_callable`, `acmg_sf`, `actionability` were reserved here and are now BUILT as
+# optional `VariantRow` columns (they are general per-variant annotation refinements). PharmGKB
+# `drug`/`response`/`evidence_level` are built on `PharmVariantRow`/`DiplotypeRow`. So none of those
+# are reserved any longer.
+
+# PharmGKB clinical-annotation evidence levels (item 9). Closed vocabulary (Principle 6).
+VALID_EVIDENCE_LEVELS: frozenset[str] = frozenset({"1A", "1B", "2A", "2B", "3", "4"})
 # The reserved `actionability` axis's recommended seed vocabulary (documentation — the field is not
 # built yet, so this is not enforced). Round-2 Q9 extended the round-1 seed with `descriptive` (a
 # large fraction of findings are self-knowledge / no-action — an explicit "none", not forced into

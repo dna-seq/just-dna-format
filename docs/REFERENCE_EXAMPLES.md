@@ -15,7 +15,13 @@ implementation in `just_dna_format.{binning,pgx,pgs}` (see `schema/tests/test_v0
 below round-trips through its Pydantic model. The compiler does **not** yet materialize them into
 parquet — that is deferred until the shapes freeze (PROPOSAL_0_4).
 
-**Two conventions the sample settled:**
+**Conventions the sample settled:**
+- **Modules compose from optional table kinds (one CSV = one concern).** The only always-present file
+  is `module_spec.yaml`; every table below is optional. A SNP module is just `variants.csv`
+  (+ `studies.csv`); a PGx module adds `haplotypes`/`allele_function`/`diplotypes`; a PharmGKB module
+  adds `pharm_variants.csv`. A module **never** carries an empty `variants.csv` or a foreign domain's
+  columns just to host one table — the SNP core stays minimal (see CLAUDE.md, the human-authorable
+  gate).
 - **Data-agnostic.** A module is a declarative lookup; it contains **no measurement**. The measured
   quantity (activity score, copy number, repeat count, heteroplasmy fraction) is supplied by the
   **consumer** at query time. The table never sees a sample.
@@ -28,7 +34,8 @@ parquet — that is deferred until the shapes freeze (PROPOSAL_0_4).
 
 Contents: (1) simple SNV — needs **none** of the machinery; (2) APOE diplotype; (3) G6PD hemizygous;
 (4) mitochondrial homoplasmic + heteroplasmy; (5) SMN1 copy-number dosage; (6) CYP2D6 star-alleles +
-activity; (7) HTT repeat expansion; (8) PGS declaration.
+activity; (7) HTT repeat expansion; (8) PGS declaration; (9) PharmGKB drug response; (10) general
+annotation axes on `VariantRow`.
 
 ---
 
@@ -199,8 +206,12 @@ Notes: **`repeat_unit` is free-form** (large composite VNTR motifs like DRD4 exo
 (`TH01 9.3` = "9 repeats + 3 bases", not decimal 9.3) is an allele-*name* convention, not a binning
 bound — for pathogenic-threshold loci (HTT) it never matters; for forensic STRs, carry the exact
 allele string in the reserved motif-path escape hatch, not the float bound. **5-HTTLPR does not belong
-here** — it is a biallelic **S/L structural indel** (a ~43 bp insertion), not a repeat *count*; express
-it in the genotype/haplotype model (a two-state call, usually phased with `rs25531` — a mini-diplotype).
+here — and does not fit 0.4 at all yet.** It is a biallelic **S/L structural indel** (a ~43 bp
+insertion), not a repeat *count*; and its `S`/`L` alleles are **not nucleotides**, so neither
+`VariantRow.genotype` nor `HaplotypeRow.allele` (both `^[ACGT]+$`) can express them. This is the
+concrete motivating case for **RM5 (symbolic alleles**, `<S>`/`<L>`/`<DEL>`) — a deferred gap, not a
+today-authorable shape. (It is usually read phased with `rs25531`, so it is really a mini-diplotype
+over a symbolic allele.)
 The complex-VNTR motif-path form (DAT1 `A-A-B-C-D-…`) is reserved as the home for the sanctioned
 declarative-grammar escape hatch (a regex over an allele string) if a plain count proves too coarse.
 
@@ -222,3 +233,42 @@ optional `training_cohort` (sub-superpop precision) let a consumer withhold or c
 off-population; **`match_rate_floor`** is the author-set variant-match floor below which the score is
 invalid. The *observed* per-sample match rate is a measurement — it lives consumer-side, never in the
 module (the data-agnostic north star).
+
+---
+
+## 9. PharmGKB drug response (item 9) — a distinct table, not columns on `VariantRow`
+
+Drug-response annotation maps a variant/diplotype → a **drug** → a **response** + a PharmGKB
+**evidence level** (`1A`…`4`) — a different axis from a risk weight. It gets its **own** rowtype so a
+SNP author's `variants.csv` never grows drug columns (one CSV = one concern).
+
+Single-variant PharmGKB (`pharm_variants.csv`, `PharmVariantRow` — VKORC1 → warfarin):
+```csv
+rsid,gene,drug,response,evidence_level,trait_efo_id,conclusion
+rs9923231,VKORC1,warfarin,"reduced dose requirement",1A,,"−1639 A — lower warfarin dose"
+rs1799853,CYP2C9,warfarin,"reduced clearance",1A,,"*2 — lower warfarin dose"
+```
+Diplotype-keyed PharmGKB rides on `DiplotypeRow`'s optional `drug`/`response`/`evidence_level` (it is
+already a PGx-domain table a SNP author never opens):
+```csv
+gene,haplotype_a,haplotype_b,trait_efo_id,phenotype,drug,response,evidence_level,conclusion
+CYP2D6,*1,*4,,Intermediate Metabolizer,codeine,"reduced analgesia",1A,"*1/*4 — impaired codeine activation"
+```
+A PharmGKB module carries `pharm_variants.csv` (+ the diplotype tables if star-allele) and **no**
+`variants.csv`.
+
+---
+
+## 10. General annotation axes on `VariantRow` (optional, sparse)
+
+Three optional refinements apply to *any* variant finding, so they live on `VariantRow` (not a domain
+table); a plain SNP row omits them entirely.
+```csv
+rsid,genotype,gene,clin_sig,requires_callable,acmg_sf,actionability,conclusion
+rs80357906,A/AT,BRCA1,pathogenic,true,true,preventable,"BRCA1 frameshift — HBOC; risk-reducing options"
+```
+- `requires_callable=true` — the *absence* of this variant is the informative call; a consumer lacking
+  callability data must withhold the "no pathogenic variant" reassurance, never assert it.
+- `acmg_sf=true` — the gene is on the ACMG secondary-findings list.
+- `actionability=preventable` — an `ACTIONABILITY_SEED` value a consumer's return-of-results policy may
+  read; the format never decides disclosure.

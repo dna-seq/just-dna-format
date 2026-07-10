@@ -42,6 +42,7 @@ from just_dna_format.pgx import (
     AlleleFunctionRow,
     DiplotypeRow,
     HaplotypeRow,
+    PharmVariantRow,
 )
 from just_dna_format.spec import (
     RECOMMENDED_EFFECT_MEASURES,
@@ -57,7 +58,7 @@ from just_dna_format.spec import (
     StudyRow,
     VariantRow,
 )
-from just_dna_format.vocab import ACTIONABILITY_SEED, RESERVED_NAMES_0_4
+from just_dna_format.vocab import ACTIONABILITY_SEED, RESERVED_NAMES_0_4, VALID_EVIDENCE_LEVELS
 
 # The authored surface, grouped by role. Order is the reading order for an author/agent.
 _MODULE_MODELS: dict[str, type[BaseModel]] = {
@@ -82,6 +83,7 @@ _PGX_MODELS: dict[str, type[BaseModel]] = {
     "HaplotypeRow": HaplotypeRow,
     "AlleleFunctionRow": AlleleFunctionRow,
     "DiplotypeRow": DiplotypeRow,
+    "PharmVariantRow": PharmVariantRow,
 }
 _PGS_MODELS: dict[str, type[BaseModel]] = {"PgsRow": PgsRow}
 
@@ -135,6 +137,7 @@ def authoring_reference() -> dict[str, Any]:
             "clin_sig": sorted(VALID_CLIN_SIG),
             "measure_kind": sorted(VALID_MEASURE_KINDS),
             "function_status": sorted(VALID_FUNCTION_STATUS),
+            "evidence_level": sorted(VALID_EVIDENCE_LEVELS),
             "training_ancestry": sorted(VALID_TRAINING_ANCESTRY),
             "research_tier": sorted(VALID_RESEARCH_TIERS),
             "reserved_flags": sorted(RESERVED_FLAGS),

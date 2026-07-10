@@ -60,6 +60,17 @@ cycle* in `USE_CASES.md`.
   to widen *additively*, not a consumer error. (This is why `copy_number`-as-a-measured-value was
   wrong — the module never holds the measurement — yet the *range* shapes are still only as general as
   the cases they were generalized from.)
+- **Human-authorable ⇔ machine-precise — a gate on every schema change.** The authored DSL
+  (`module_spec.yaml` + CSVs) is a *duality*: it must be **both** a legible, human-authorable artifact
+  **and** a formally algorithmizable, machine-precise one. The compiled parquet is already the
+  pure-machine form — **if we only wanted machine precision we would ship parquet-only.** The DSL
+  exists for the human. So gate any schema change on: **"will this burden the rare human author?"**
+  Modules must never read like enterprise-DB internals — alien, sprawling, machine-code-like. Corollary
+  — **one CSV = one concern; compose from optional table kinds**: the SNP core (`variants.csv` +
+  `studies.csv`) stays minimal; a module includes only the table kinds it uses; a PGx / PharmGKB / PRS
+  module adds its own focused table (`diplotypes.csv`, `pharm_variants.csv`, `pgs.csv`) rather than an
+  empty `variants.csv` or a foreign domain's columns on every row. When human-legibility and
+  machine-precision tension, the parquet absorbs the precision; the DSL keeps the human shape.
 - Type hints mandatory; **pathlib** for paths; **absolute imports only**; **no inline imports** (a
   guarded module-level `try/except ImportError` for optional deps is the only exception).
 - Pydantic 2 for all data models. Constrained vocabularies are `frozenset[str]` + a validator, never
