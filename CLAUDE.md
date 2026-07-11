@@ -3,7 +3,8 @@
 This repo is a **uv workspace** publishing two libraries: **`just-dna-format`** (the schema contract
 — pydantic models for the authored spec DSL and the compiled `manifest.json`, plus integrity/
 identity helpers, costing only `pydantic` + `cryptography` — the latter solely for Ed25519 signing) and **`just-dna-compiler`** (the reference compiler that
-transforms a validated spec into a three-parquet artifact + manifest, adding polars/duckdb). Any
+transforms a validated spec into a multi-parquet artifact + manifest — the three-parquet SNP core
+plus one parquet per optional table kind a composed module adds, adding polars/duckdb). Any
 consumer picks the tier it needs. There is **no app, no orchestration, and no network here** — those
 live in `just-dna-pipelines` / `just-dna-lite` / `just-dna-marketplace`.
 
@@ -15,8 +16,14 @@ live in `just-dna-pipelines` / `just-dna-lite` / `just-dna-marketplace`.
    within a major, integrity-as-identity, orthogonal axes, the vocabulary idiom, round-trip/
    idempotency, and requiredness compatibility). When a plan conflicts with it, it wins. **An audit
    or design review that has not read the Constitution is incomplete** — its compatibility rules
-   (Principles 3, 7, 8) decide whether a proposed change is even legal.
-2. **[docs/ROADMAP.md](docs/ROADMAP.md)** — plans (revised often) and the `1.0`-cleanup tracker.
+   (Principles 3, 7, 8) decide whether a proposed change is even legal. **The charter is
+   self-contained — it names no other document.** The navigation *into* the living material it
+   alludes to is here in this guide (below); keep it that way — never add an outward pointer to the
+   Constitution.
+2. **[docs/ROADMAP.md](docs/ROADMAP.md)** — forward-only, revised often. Holds the 0.5 scope (`RMn`
+   items), the freeform idea-book, **the reserved-namespace tracker** (Constitution Principle 5), and
+   **the 1.0-cleanup candidate tracker** (Principles 3 and 8). These two trackers are the concrete,
+   living lists the Constitution keeps out of itself.
 3. **[docs/CHANGELOG.md](docs/CHANGELOG.md)** — what actually shipped, newest first (shared across the
    ecosystem repos that consume these libs).
 4. **[docs/COMPILER.md](docs/COMPILER.md)** — the compiler's per-feature coverage table (which schema

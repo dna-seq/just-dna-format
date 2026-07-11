@@ -34,9 +34,9 @@ Build both distributions: `uv build --all-packages`.
 - [`docs/CONSTITUTION.md`](docs/CONSTITUTION.md) — the durable charter: goals, non-goals, and the
   invariants every release upholds (declarative-not-code, no-network, backward-compat-within-a-major,
   integrity). Amended only deliberately.
-- [`docs/ROADMAP.md`](docs/ROADMAP.md) — what shipped and what's planned (including the 0.3 schema
-  brief and the 1.0-cleanup tracker). Revised often.
-- [`docs/CHANGELOG.md`](docs/CHANGELOG.md) — release history.
+- [`docs/ROADMAP.md`](docs/ROADMAP.md) — forward-only: 0.5 scope (the `RMn` items), the freeform
+  idea-book, the reserved namespace, and the 1.0-cleanup tracker. Revised often.
+- [`docs/CHANGELOG.md`](docs/CHANGELOG.md) — release history (what shipped in 0.1.0 → 0.4.0), newest first.
 - [`docs/COMPILER.md`](docs/COMPILER.md) — how much of the 0.3 + 0.4 schema the compiler covers: the
   validator is complete and all nine 0.4 table kinds materialize with lossless round-trip; a few
   computed stats are intentionally deferred (a partial-conformance table).

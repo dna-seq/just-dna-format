@@ -3,17 +3,19 @@
 The durable design charter for `just-dna-format` and `just-dna-compiler`: what these packages are
 for, what they will never do, and the invariants every release upholds.
 
-Unlike [`ROADMAP.md`](ROADMAP.md) (plans, revised often) and
-[`CHANGELOG.md`](CHANGELOG.md) (what shipped), **this document changes only by deliberate
-amendment** — so the core commitments below cannot be lost or altered as a side effect of routine
-roadmap edits. When a roadmap plan conflicts with this document, this document wins. When a plan
-graduates into a durable rule, promote it here on purpose.
+This is the **self-contained** charter: it stands alone and points to no other document, so the core
+commitments below cannot be lost or altered as a side effect of routine edits elsewhere. **It changes
+only by deliberate amendment.** When any other document, plan, or convention in the repo conflicts
+with this one, this document wins; when a plan graduates into a durable rule, promote it here on
+purpose.
 
 ## Goals
 
 - Be the **declarative schema contract** for just-dna annotation modules and the **reference
   compiler** that targets it: an authored spec (`module_spec.yaml` + CSVs) → a `manifest.json` plus a
-  three-parquet artifact, carrying per-input and per-artifact hashes and a Merkle `artifact.digest`.
+  multi-parquet artifact (the three-parquet SNP core — weights/annotations/studies — plus one parquet
+  per optional table kind a composed module adds), carrying per-input and per-artifact hashes and a
+  Merkle `artifact.digest`.
 - Stay **dependency-light, in tiers.** `just-dna-format` (schema + integrity) costs only `pydantic`
   plus `cryptography` (the latter solely for Ed25519 signature verify/sign, added in 0.2 — a small,
   pure-verify dependency, never a heavy transitive tree), so any verify-only client can depend on it;
@@ -62,8 +64,8 @@ graduates into a durable rule, promote it here on purpose.
    The default retirement is two-step — *deprecate at the major* (still readable, emits a deprecation
    event), *remove at the next major*. Purely-internal dead weight may be removed outright at a major.
    Anything that changes `artifact.digest` bytes (parquet column set or types) is inherently
-   major-only, because the digest is a version's immutable identity. The running list of items queued
-   for the next major lives in [`ROADMAP.md`](ROADMAP.md) ("1.0 cleanup candidates").
+   major-only, because the digest is a version's immutable identity. The concrete list of items
+   queued for the next major is maintained separately, as living material.
 
 4. **Integrity and immutability.** All hashes are SHA-256, lowercase hex, prefixed `sha256:`.
    `artifact.digest` (a Merkle root over the artifact files) is the version's content identity. A
@@ -75,8 +77,8 @@ graduates into a durable rule, promote it here on purpose.
    not pile up independent axes. (The legacy `state` field — conflating statistical significance,
    effect direction, and a genotype descriptor — is the anti-pattern being unwound in 0.3.) Because
    Principle 3 makes names and vocabularies permanent within a major, **audit every new name against
-   likely future additions before adding it**; the reserved namespace is tracked in
-   [`ROADMAP.md`](ROADMAP.md).
+   likely future additions before adding it**, and reserve the names of anticipated future axes so
+   they survive the one-way door.
 
 6. **Vocabulary idiom.** Constrained vocabularies are `frozenset[str]` + a validator, not
    `Enum`/`Literal`. This keeps a vocabulary additive and inspectable, and matches the existing schema.
@@ -103,14 +105,13 @@ graduates into a durable rule, promote it here on purpose.
      demoted to optional. Demoting it would let a newer module omit data an older consumer depends
      on. (This is why 0.3 keeps `state` and the ClinVar booleans **required/authoritative** and adds
      `direction`/`clin_sig` as *optional* orthogonal axes with derived fallbacks, rather than the
-     inverse the roadmap first sketched.)
+     inverse first considered.)
    - A **new** field may be introduced and even treated as required for freshly-authored specs, **but
      only if existing data still validates** — i.e. it is optional/defaulted with respect to every
      already-published module (which never set it), so nothing previously valid becomes invalid.
    - The forbidden moves — demoting an existing required field to optional, promoting an existing
      optional field to unconditionally-required, or retyping a field — are **breaking changes
-     reserved for the next major** (the requiredness rehaul), tracked in
-     [`ROADMAP.md`](ROADMAP.md)'s 1.0-cleanup list. Until then, all of the above holds.
+     reserved for the next major** (the requiredness rehaul). Until then, all of the above holds.
 
    In short: optionality tightens forward-only and never invalidates older data; loosening waits for
    the major bump. This complements Principle 3 (additive within a major) by pinning the *requiredness*
@@ -118,8 +119,8 @@ graduates into a durable rule, promote it here on purpose.
 
 ## Amendments
 
-This document is amended deliberately, never incidentally. `ROADMAP.md` holds plans and the
-`1.0` cleanup tracker; `CHANGELOG.md` records what shipped; coding-style conventions (type
-hints, pathlib, absolute imports) live with the code. If any of those conflict with a principle here,
-this document governs — resolve the conflict by amending one or the other on purpose, not by letting
-the two drift.
+This document is amended deliberately, never incidentally. Plans, release history, the
+reserved-namespace and 1.0-cleanup trackers, and coding-style conventions (type hints, pathlib,
+absolute imports) all live in their own documents, never here. If any of them conflicts with a
+principle above, this document governs — resolve the conflict by amending one or the other on
+purpose, not by letting the two drift.

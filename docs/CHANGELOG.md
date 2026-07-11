@@ -240,4 +240,29 @@ adopted them and the contract facts that surfaced.
   `module_name` are unchanged.
 - **`VALID_PRIORITIES` and `PMID_PATTERN` are not in `just_dna_format.spec`** — they were dead code
   in the original schema (no validator referenced them / the PMID validator was commented out). The
-  live study rule remains "pmid must be non-empty". See ROADMAP.md → Observations.
+  live study rule remains "pmid must be non-empty".
+
+## 2026-07-06 — just-dna-format 0.1.0 + just-dna-compiler 0.1.0 (initial workspace release)
+
+Restructured the format into a uv workspace publishing the two packages, and extracted the schema +
+transform out of just-dna-pipelines so they are shared, not duplicated. `manifest_version` /
+`schema_version` established at `"1.0"`.
+
+- **`just-dna-format`** (schema; `pydantic` + stdlib at this point): `spec` (the authored DSL —
+  `ModuleSpecConfig`, `VariantRow`, `StudyRow`, `ModuleInfo` extending `Display`); `manifest`
+  (`ModuleManifest` + `Identity` / `Display` / `Stats` / `Compilation` / `FileEntry` / `Artifact`);
+  `integrity` (`sha256_file`, the `artifact_digest` Merkle root, `build_artifact`, `verify_manifest`);
+  `identity` (name/namespace rules, SemVer `Version` / `parse_version`, `canonical_id`, legacy
+  `vN → N.0.0`).
+- **`just-dna-compiler`** (transform; + polars / duckdb / pyyaml / platformdirs / python-dotenv):
+  `validate_spec`, `compile_module` (emits `manifest.json` with input + artifact hashes and the
+  digest, plus `genes` / `categories` stats), `reverse_module`, and a pipelines-free, **inject-only**
+  Ensembl `resolver` (never downloads).
+- **Provenance logs.** Optional per-version hashed log files (`ModuleManifest.logs`) — a top-level
+  `*.log` plus a `logs/` per-role subtree — copied into the module dir, hashed like `inputs`, kept
+  **out of `artifact.digest`**. Absent logs never invalidate; `verify_manifest(check_logs=True)`.
+- **Ensembl cache reuse.** `just_dna_compiler.cache` mirrors just-dna-lite's on-disk layout
+  (`$JUST_DNA_PIPELINES_CACHE_DIR/ensembl_variations/…`, `.env`-driven); it locates a reference but
+  never downloads one.
+- Tests: 82 passing (schema + compiler), incl. regression tests ported from just-dna-lite; the
+  Ensembl resolver tests are `@integration` (skip without a cache).
