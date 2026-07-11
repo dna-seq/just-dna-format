@@ -2,7 +2,7 @@
 
 This repo is a **uv workspace** publishing two libraries: **`just-dna-format`** (the schema contract
 — pydantic models for the authored spec DSL and the compiled `manifest.json`, plus integrity/
-identity helpers, costing only `pydantic`) and **`just-dna-compiler`** (the reference compiler that
+identity helpers, costing only `pydantic` + `cryptography` — the latter solely for Ed25519 signing) and **`just-dna-compiler`** (the reference compiler that
 transforms a validated spec into a three-parquet artifact + manifest, adding polars/duckdb). Any
 consumer picks the tier it needs. There is **no app, no orchestration, and no network here** — those
 live in `just-dna-pipelines` / `just-dna-lite` / `just-dna-marketplace`.

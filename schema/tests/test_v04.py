@@ -312,6 +312,38 @@ def test_validate_bins_accepts_contiguous_rejects_overlap_warns_gap() -> None:
         validate_bins(overlap)
 
 
+def test_validate_bins_warns_on_continuous_fraction_gap() -> None:
+    # allele_fraction is a _CONTINUOUS_GAP_KIND: any positive hole between authored bins warns
+    # (unlike integer kinds, which tolerate an adjacent [.,35],[36,.] as contiguous).
+    het = [
+        HeteroplasmyRow(gene="MT-TL1", reference_sequence="NC_012920.1", tissue="blood",
+                        measure_min=0.0, measure_max=0.2, trait_efo_id="MONDO_0010789",
+                        conclusion="low"),
+        HeteroplasmyRow(gene="MT-TL1", reference_sequence="NC_012920.1", tissue="blood",
+                        measure_min=0.4, measure_max=1.0, trait_efo_id="MONDO_0010789",
+                        conclusion="high"),
+    ]
+    warns = validate_bins(het)
+    assert warns and "no bin covers (0.2, 0.4)" in warns[0]
+
+
+def test_validate_bins_ignores_activity_score_interior_gaps() -> None:
+    # activity_score is consumer-summed/quantized, so an interior hole is NOT a meaningful gap and
+    # must not warn (guards against a regression that added it to the gap set).
+    scores = [
+        ActivityPhenotypeRow(gene="CYP2D6", measure_min=0.0, measure_max=0.0, conclusion="PM"),
+        ActivityPhenotypeRow(gene="CYP2D6", measure_min=2.0, measure_max=3.0, conclusion="UM"),
+    ]
+    assert validate_bins(scores) == []
+
+
+def test_measure_bounds_reject_non_finite() -> None:
+    for bad in (float("nan"), float("inf")):
+        with pytest.raises(ValidationError):
+            RepeatAlleleRow(gene="HTT", repeat_unit="CAG", measure_min=6, measure_max=bad,
+                            conclusion="x")
+
+
 def test_validate_bins_differentiates_by_modifier_and_trait() -> None:
     # two sharp [0,0] SMN1 rows differing only by SMN2 modifier are distinct keys, not an overlap
     smn = [

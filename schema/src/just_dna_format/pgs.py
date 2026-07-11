@@ -28,7 +28,7 @@ from typing import Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from just_dna_format.vocab import MULTI_SEP, check_vocab, validate_trait_ids
+from just_dna_format.vocab import MULTI_SEP, check_vocab, validate_finite, validate_trait_ids
 
 PGS_ID_PATTERN: re.Pattern[str] = re.compile(r"^PGS\d+$")
 # 1000G superpopulation codes + `multi` for multi-ancestry scores (closed-validated, additive).
@@ -100,6 +100,7 @@ class PgsRow(BaseModel):
     @field_validator("match_rate_floor")
     @classmethod
     def _validate_match_rate_floor(cls, v: Optional[float]) -> Optional[float]:
+        validate_finite(v, "match_rate_floor")
         if v is not None and not (0.0 <= v <= 1.0):
             raise ValueError(f"match_rate_floor must be within [0, 1], got {v}")
         return v

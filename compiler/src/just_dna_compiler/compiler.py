@@ -812,9 +812,14 @@ def _build_weights(variants: list[VariantRow], config: ModuleSpecConfig) -> pl.D
                 "end": v.start,
                 "ref": v.ref,
                 "alts": v.alts.split(",") if v.alts else None,
-                "clinvar": v.clinvar if v.clinvar is not None else False,
-                "pathogenic": v.pathogenic if v.pathogenic is not None else False,
-                "benign": v.benign if v.benign is not None else False,
+                # Tri-state: keep None distinct from False (nullable pl.Boolean). Collapsing
+                # None→False lost the difference between "curator stated not-pathogenic" (False) and
+                # "unstated" (None) — an authored False did not survive the round-trip, and
+                # `effective_pathogenic` flipped False→None on reload (Principle 7). Matches the
+                # tri-state 0.4 axes (`requires_callable`/`acmg_sf`).
+                "clinvar": v.clinvar,
+                "pathogenic": v.pathogenic,
+                "benign": v.benign,
                 "likely_pathogenic": False,
                 "likely_benign": False,
                 # ── 0.3 additive columns (materialized passthrough; derivations are NOT computed
@@ -871,7 +876,12 @@ def _build_weights(variants: list[VariantRow], config: ModuleSpecConfig) -> pl.D
 
 
 def _build_annotations(variants: list[VariantRow], module_name: str) -> pl.DataFrame:
-    """Build annotations.parquet, deduplicated by variant_key (first occurrence wins)."""
+    """Build annotations.parquet, deduplicated by variant_key (first occurrence wins).
+
+    Carries an explicit `variant_key` column (rsid, else `chrom:start:ref`) so a **position-only**
+    variant's gene/phenotype/category survive the reverse round-trip. Keying the reverse lookup on
+    `rsid` alone dropped them, because rsid is null for a position-only row and every such row
+    collapsed onto one null key (Principle 7 round-trip fidelity)."""
     seen_keys: set[str] = set()
     records: list[dict[str, Optional[str]]] = []
     for v in variants:
@@ -880,6 +890,7 @@ def _build_annotations(variants: list[VariantRow], module_name: str) -> pl.DataF
             records.append(
                 {
                     "rsid": v.rsid,
+                    "variant_key": key,
                     "module": module_name,
                     "gene": v.gene or "",
                     "phenotype": v.phenotype or "",
@@ -889,6 +900,7 @@ def _build_annotations(variants: list[VariantRow], module_name: str) -> pl.DataF
             seen_keys.add(key)
     schema = {
         "rsid": pl.Utf8,
+        "variant_key": pl.Utf8,
         "module": pl.Utf8,
         "gene": pl.Utf8,
         "phenotype": pl.Utf8,
@@ -904,6 +916,13 @@ def _build_studies(studies: list[StudyRow], module_name: str) -> pl.DataFrame:
         records.append(
             {
                 "rsid": s.rsid,
+                # Position columns (RM2): a StudyRow may be position-only (rsid null, chrom+start
+                # set) — its variant_key is chrom:start:ref. Carrying them keeps such a row lossless
+                # through compile → reverse → recompile (Principle 7); dropping them made the reversed
+                # row identifier-less, so recompile failed validation.
+                "chrom": s.chrom,
+                "start": s.start,
+                "ref": s.ref,
                 "module": module_name,
                 "pmid": s.pmid,
                 "population": s.population,
@@ -919,6 +938,9 @@ def _build_studies(studies: list[StudyRow], module_name: str) -> pl.DataFrame:
         )
     schema = {
         "rsid": pl.Utf8,
+        "chrom": pl.Utf8,
+        "start": pl.UInt32,
+        "ref": pl.Utf8,
         "module": pl.Utf8,
         "pmid": pl.Utf8,
         "population": pl.Utf8,
@@ -976,18 +998,17 @@ def reverse_module(
 
     default_curator = "unknown"
     default_method = "unknown"
+    # `priority` is intentionally NOT defaulted. It is Optional with no `Defaults.priority` fallback
+    # ('ai-module-creator'/'literature-review' back curator/method, but priority defaults to None),
+    # so a null priority is *authored-absent*. Inferring a default from the mode would fabricate a
+    # value for rows that never set one — turning weights `['high', None]` into `['high', 'high']`
+    # on recompile (a Principle 7 idempotency break). It is written verbatim, per row, instead.
     default_priority: Optional[str] = None
     if weights_df is not None:
         default_curator = _most_common(weights_df, "curator") or "unknown"
         default_method = _most_common(weights_df, "method") or "unknown"
-        if "priority" in weights_df.columns:
-            non_null = weights_df["priority"].drop_nulls()
-            if non_null.len() > 0:
-                default_priority = non_null.mode().to_list()[0]
 
     defaults_dict: dict[str, Any] = {"curator": default_curator, "method": default_method}
-    if default_priority is not None:
-        defaults_dict["priority"] = default_priority
 
     spec = {
         "schema_version": "1.0",
@@ -1012,11 +1033,15 @@ def reverse_module(
         ann_path = parquet_dir / "annotations.parquet"
         if ann_path.exists():
             for row in pl.read_parquet(ann_path).iter_rows(named=True):
-                ann_lookup[row["rsid"]] = {
-                    "gene": row.get("gene", ""),
-                    "phenotype": row.get("phenotype", ""),
-                    "category": row.get("category", ""),
-                }
+                # Key by variant_key so position-only variants (rsid null) match; fall back to rsid
+                # for an older artifact compiled before the variant_key column existed.
+                key = row.get("variant_key") or row.get("rsid")
+                if key is not None:
+                    ann_lookup[key] = {
+                        "gene": row.get("gene", ""),
+                        "phenotype": row.get("phenotype", ""),
+                        "category": row.get("category", ""),
+                    }
         _write_variants_csv(
             weights_df, ann_lookup, default_curator, default_method, default_priority,
             output_dir / "variants.csv",
@@ -1068,15 +1093,18 @@ def _write_variants_csv(
         writer.writeheader()
         for row in weights_df.iter_rows(named=True):
             rsid = row.get("rsid") or ""
-            ann = ann_lookup.get(rsid, {})
+            # Reconstruct the variant_key the same way VariantRow.variant_key does, so the annotation
+            # lookup matches for position-only variants (rsid null → chrom:start:ref).
+            variant_key = rsid or f"{row.get('chrom')}:{row.get('start')}:{row.get('ref')}"
+            ann = ann_lookup.get(variant_key, {})
             genotype_list = row.get("genotype", [])
             alts_list = row.get("alts")
             curator = row.get("curator", "")
             method = row.get("method", "")
             priority = row.get("priority")
-            clinvar = row.get("clinvar", False)
-            pathogenic = row.get("pathogenic", False)
-            benign = row.get("benign", False)
+            clinvar = row.get("clinvar")
+            pathogenic = row.get("pathogenic")
+            benign = row.get("benign")
             # Reconstruct the genotype string. The `phased` bit (materialized alongside the allele
             # list) tells us which separator to re-emit: a phased pair keeps its order and joins with
             # '|'; an unphased pair is re-emitted alphabetically sorted with '/'; a single allele
@@ -1106,9 +1134,10 @@ def _write_variants_csv(
                     "gene": ann.get("gene", ""),
                     "phenotype": ann.get("phenotype", ""),
                     "category": ann.get("category", ""),
-                    "clinvar": str(clinvar).lower() if clinvar else "",
-                    "pathogenic": str(pathogenic).lower() if pathogenic else "",
-                    "benign": str(benign).lower() if benign else "",
+                    # Tri-state (True/False/None → true/false/empty), so an authored False survives.
+                    "clinvar": _bool_cell(clinvar),
+                    "pathogenic": _bool_cell(pathogenic),
+                    "benign": _bool_cell(benign),
                     "curator": curator if curator != default_curator else "",
                     "method": method if method != default_method else "",
                     "direction": row.get("direction") or "",
@@ -1130,7 +1159,8 @@ def _write_variants_csv(
 def _write_studies_csv(studies_df: pl.DataFrame, output_path: Path) -> None:
     """Write studies.csv from studies parquet."""
     fieldnames = [
-        "rsid", "pmid", "population", "p_value", "conclusion", "study_design",
+        "rsid", "chrom", "start", "ref", "pmid", "population", "p_value", "conclusion",
+        "study_design",
         # 0.3 additive columns
         "stat_significance", "effect_size", "effect_measure", "trait_efo_id",
     ]
@@ -1142,9 +1172,14 @@ def _write_studies_csv(studies_df: pl.DataFrame, output_path: Path) -> None:
             if pmid is None or str(pmid).strip() == "":
                 continue
             effect_size = row.get("effect_size")
+            start = row.get("start")
             writer.writerow(
                 {
-                    "rsid": row["rsid"],
+                    "rsid": row.get("rsid") or "",
+                    # Position columns so a position-only study row (rsid null) keeps an identifier.
+                    "chrom": row.get("chrom") or "",
+                    "start": start if start is not None else "",
+                    "ref": row.get("ref") or "",
                     "pmid": str(pmid).strip(),
                     "population": row.get("population") or "",
                     "p_value": row.get("p_value") or "",

@@ -5,13 +5,13 @@ reference compiler — as a uv workspace publishing two packages:
 
 | Package | Path | What it is | Deps |
 |---|---|---|---|
-| [`just-dna-format`](schema) | `schema/` | The schema + integrity contract: the authored DSL spec, the compiled `manifest.json`, digests, identity/versioning. | Pydantic + stdlib |
-| [`just-dna-compiler`](compiler) | `compiler/` | The transform: spec directory → three-parquet artifact + `manifest.json`. | + polars, duckdb, pyyaml |
+| [`just-dna-format`](schema) | `schema/` | The schema + integrity contract: the authored DSL spec, the compiled `manifest.json`, digests, identity/versioning. | Pydantic + cryptography |
+| [`just-dna-compiler`](compiler) | `compiler/` | The transform: a composed spec directory → a parquet artifact + `manifest.json`. | + polars, duckdb, pyyaml, platformdirs, python-dotenv |
 
 **Why two packages, one repo.** `just-dna-format` stays dependency-light so *anyone* — a thin API,
 a webui client, a downloader that only verifies a digest — can depend on it for the cost of
-`pydantic`. The compiler's polars/duckdb weight lives in `just-dna-compiler`. Consumers pick the
-tier they need:
+`pydantic` (+ `cryptography`, for Ed25519 signature verification). The compiler's polars/duckdb
+weight lives in `just-dna-compiler`. Consumers pick the tier they need:
 
 - verify-only client → `just-dna-format`
 - compile / recompile (marketplace, pipelines) → `just-dna-compiler` (pulls `just-dna-format`)
@@ -37,8 +37,9 @@ Build both distributions: `uv build --all-packages`.
 - [`docs/ROADMAP.md`](docs/ROADMAP.md) — what shipped and what's planned (including the 0.3 schema
   brief and the 1.0-cleanup tracker). Revised often.
 - [`docs/CHANGELOG.md`](docs/CHANGELOG.md) — release history.
-- [`docs/COMPILER.md`](docs/COMPILER.md) — how much of the 0.3 schema the compiler covers: the
-  validator is complete, some computed items are intentionally deferred (a partial-conformance table).
+- [`docs/COMPILER.md`](docs/COMPILER.md) — how much of the 0.3 + 0.4 schema the compiler covers: the
+  validator is complete and all nine 0.4 table kinds materialize with lossless round-trip; a few
+  computed stats are intentionally deferred (a partial-conformance table).
 - [`docs/REFERENCE_EXAMPLES.md`](docs/REFERENCE_EXAMPLES.md) — illustrative worked module drafts
   (simple SNV, APOE diplotype, G6PD hemizygous, SMN1 copy-number, CYP2D6 star-alleles). Ideas/drafts
   for authors and consumers, **not** a shipped contract.

@@ -14,9 +14,12 @@ graduates into a durable rule, promote it here on purpose.
 - Be the **declarative schema contract** for just-dna annotation modules and the **reference
   compiler** that targets it: an authored spec (`module_spec.yaml` + CSVs) → a `manifest.json` plus a
   three-parquet artifact, carrying per-input and per-artifact hashes and a Merkle `artifact.digest`.
-- Stay **dependency-light, in tiers.** `just-dna-format` (schema + integrity) costs only `pydantic`,
-  so any verify-only client can depend on it; `just-dna-compiler` adds polars/duckdb/pyyaml for the
-  transform. Consumers pick the tier they need and pull nothing heavier.
+- Stay **dependency-light, in tiers.** `just-dna-format` (schema + integrity) costs only `pydantic`
+  plus `cryptography` (the latter solely for Ed25519 signature verify/sign, added in 0.2 — a small,
+  pure-verify dependency, never a heavy transitive tree), so any verify-only client can depend on it;
+  `just-dna-compiler` adds polars/duckdb/pyyaml for the transform. Consumers pick the tier they need
+  and pull nothing heavier. The bright line is the *heavyweight* deps in Non-goals below (Dagster /
+  LLM SDKs / HuggingFace), which neither tier may ever pull.
 - Make **integrity the identity.** A version is defined by its content digest, byte-reproducible by
   anyone who holds the inputs.
 

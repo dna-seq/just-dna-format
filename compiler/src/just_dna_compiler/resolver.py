@@ -184,9 +184,14 @@ def _lookup_rsids_by_position(
         f"WHERE ({where}) AND id LIKE 'rs%'",
         params,
     ).fetchall()
+    # A ref-less input position (ref=None) matched on (chrom, start) only, so the caller's lookup key
+    # is `chrom:start:None` — it can never equal a DB key carrying the concrete ref. Register such
+    # positions under the ref-less key too, so a position-only-without-ref variant resolves.
+    refless = {(str(c), s) for c, s, r in positions if r is None}
     result: dict[str, str] = {}
     for chrom, start, ref, row_id in rows:
-        key = f"{chrom}:{start}:{ref}"
-        if key not in result:
-            result[key] = str(row_id)
+        full = f"{chrom}:{start}:{ref}"
+        result.setdefault(full, str(row_id))
+        if (str(chrom), start) in refless:
+            result.setdefault(f"{chrom}:{start}:None", str(row_id))
     return result

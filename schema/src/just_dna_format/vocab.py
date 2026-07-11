@@ -10,6 +10,7 @@ constrained vocabularies are `frozenset[str]` + a validator, never `Enum`/`Liter
 (`from just_dna_format.spec import VALID_DIRECTIONS`) keep working unchanged.
 """
 
+import math
 import re
 from typing import Optional
 
@@ -117,4 +118,13 @@ def validate_rsid(value: Optional[str]) -> Optional[str]:
     """Validate an optional dbSNP identifier (`rs<digits>`)."""
     if value is not None and not RSID_PATTERN.match(value):
         raise ValueError(f"rsid must match rs<digits>, got: {value!r}")
+    return value
+
+
+def validate_finite(value: Optional[float], field_name: str) -> Optional[float]:
+    """Reject a non-finite float (`NaN`/`inf`). A `NaN` breaks round-trip equality (`NaN != NaN`
+    makes `needs_upgrade`/idempotency checks oscillate) and serialises to the non-reloadable cell
+    `"nan"`; an authored measure is always a finite number. Passes `None` through."""
+    if value is not None and not math.isfinite(value):
+        raise ValueError(f"{field_name} must be a finite number, got: {value!r}")
     return value

@@ -1,6 +1,6 @@
 [project]
 name = "just-dna-format"
-version = "0.3.0"
+version = "0.4.0"
 description = "Declarative schema + integrity contract for just-dna annotation modules (DSL spec, manifest, digests)"
 readme = "README.md"
 requires-python = ">=3.13"

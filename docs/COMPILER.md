@@ -86,11 +86,20 @@ derivation" table):
 - **`weights.parquet`/`studies.parquet` carry the 0.3 columns** (null-filled when unused) plus a
   `phased` bit, so a re-compile under this compiler changes `artifact.digest` for every module — even
   one that sets no 0.3 column. Expected on a compiler-version bump: reproducibility is pinned by
-  `compiler_version`, and already-published versions keep their old digest until re-published. (0.3
-  is not yet published, so this digest change is still free to absorb.)
+  `compiler_version`, and already-published versions keep their old digest until re-published. The
+  0.4.0 round-trip fixes moved the digest again for some modules — `annotations.parquet` gained a
+  `variant_key` column, `studies.parquet` gained `chrom`/`start`/`ref`, and the ClinVar booleans are
+  now null instead of `False` when unset. (0.4 is not yet published, so these digest changes are
+  still free to absorb.)
 - **Round-trip is lossless and idempotent** (CONSTITUTION Principle 7): `reverse_module` → recompile
   preserves every 0.3 column *including phase* (the `phased` bit re-emits `A|G` vs sorted `A/G`), and
-  compiling the same spec twice in a fixed environment yields the same digest.
+  compiling the same spec twice in a fixed environment yields the same digest. This now holds for the
+  shapes an earlier pass got wrong (0.4.0 fixes, all regression-tested): **position-only** variants
+  (annotations keyed by `variant_key`, not the null `rsid`) and **position-only study rows**
+  (`studies.parquet` carries `chrom`/`start`/`ref`, so a reversed row keeps an identifier and
+  recompiles); a partially-set **`priority`** is written verbatim, not fabricated from the mode; and
+  the ClinVar booleans (`clinvar`/`pathogenic`/`benign`) are **tri-state** (nullable), so an authored
+  `False` survives instead of collapsing to `None`.
 - The **`ValidationResult.info`** channel carries non-reserved `flags` notes, using stdlib logging
   semantics, **not** Eliot (the format packages do not depend on Eliot).
 

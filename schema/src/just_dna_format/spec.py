@@ -33,6 +33,7 @@ from just_dna_format.vocab import (
     VALID_SIGNIFICANCE,
     check_vocab,
     validate_allele,
+    validate_finite,
     validate_rsid,
     validate_trait_ids,
 )
@@ -127,7 +128,9 @@ class VariantRow(BaseModel):
 
     rsid: Optional[str] = Field(default=None, description="dbSNP identifier, e.g. rs1801133")
     chrom: Optional[str] = Field(default=None, description="Chromosome without 'chr' prefix")
-    start: Optional[int] = Field(default=None, description="0-based genomic position (GRCh38)")
+    start: Optional[int] = Field(
+        default=None, ge=0, description="0-based genomic position (GRCh38)"
+    )
     ref: Optional[str] = Field(default=None, description="Reference allele")
     alts: Optional[str] = Field(default=None, description="Alt allele(s), comma-separated")
     genotype: str = Field(description="Slash-separated sorted alleles, e.g. A/G")
@@ -368,6 +371,16 @@ class VariantRow(BaseModel):
     def _validate_effect_allele(cls, v: Optional[str]) -> Optional[str]:
         return validate_allele(v, "effect_allele")
 
+    @field_validator("weight")
+    @classmethod
+    def _validate_weight(cls, v: Optional[float]) -> Optional[float]:
+        return validate_finite(v, "weight")
+
+    @field_validator("effect_size")
+    @classmethod
+    def _validate_effect_size(cls, v: Optional[float]) -> Optional[float]:
+        return validate_finite(v, "effect_size")
+
     @field_validator("flags", mode="before")
     @classmethod
     def _split_flags(cls, v: object) -> object:
@@ -422,7 +435,9 @@ class StudyRow(BaseModel):
 
     rsid: Optional[str] = Field(default=None, description="dbSNP identifier or variant key")
     chrom: Optional[str] = Field(default=None, description="Chromosome (for position-only variants)")
-    start: Optional[int] = Field(default=None, description="0-based position (position-only variants)")
+    start: Optional[int] = Field(
+        default=None, ge=0, description="0-based position (position-only variants)"
+    )
     ref: Optional[str] = Field(default=None, description="Reference allele (position-only variants)")
     pmid: str = Field(description="PubMed ID or reference — free-form, must be non-empty")
     population: Optional[str] = Field(default=None, description="Study population")
@@ -456,6 +471,11 @@ class StudyRow(BaseModel):
     @classmethod
     def _validate_stat_significance(cls, v: Optional[str]) -> Optional[str]:
         return check_vocab(v, VALID_SIGNIFICANCE, "stat_significance")
+
+    @field_validator("effect_size")
+    @classmethod
+    def _validate_effect_size(cls, v: Optional[float]) -> Optional[float]:
+        return validate_finite(v, "effect_size")
 
     @field_validator("trait_efo_id")
     @classmethod

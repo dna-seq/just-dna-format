@@ -36,3 +36,10 @@ def test_public_key_matches_signer() -> None:
     pem = generate_private_key_pem()
     sig = sign_digest(_DIGEST, pem)
     assert sig.public_key == public_key_b64_from_pem(pem)
+
+
+def test_unsupported_algorithm_rejected() -> None:
+    sig = sign_digest(_DIGEST, generate_private_key_pem())
+    sig.algorithm = "rsa"
+    with pytest.raises(IntegrityError, match="unsupported signature algorithm"):
+        verify_signature(_DIGEST, sig)

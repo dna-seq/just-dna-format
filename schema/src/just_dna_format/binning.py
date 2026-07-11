@@ -44,6 +44,7 @@ from just_dna_format.vocab import (
     VALID_CLIN_SIG,
     VALID_DIRECTIONS,
     check_vocab,
+    validate_finite,
     validate_trait_ids,
 )
 
@@ -121,6 +122,11 @@ class MeasureBinRow(BaseModel):
                 f"(e.g. REPCN, CN|DS) — a pointer, not an expression, got: {v!r}"
             )
         return v
+
+    @field_validator("measure_min", "measure_max")
+    @classmethod
+    def _validate_bound_finite(cls, v: Optional[float]) -> Optional[float]:
+        return validate_finite(v, "measure bound")
 
     @field_validator("measure_kind")
     @classmethod

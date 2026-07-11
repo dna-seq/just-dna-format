@@ -1,8 +1,11 @@
 # just-dna-format — Roadmap
 
 This repo (a uv workspace publishing `just-dna-format` + `just-dna-compiler`) is the schema
-contract and reference compiler for just-dna annotation modules. This doc tracks what shipped in
-**0.1.0** and what's planned for **0.2**.
+contract and reference compiler for just-dna annotation modules. This doc tracks the design brief
+for each milestone; what **actually shipped** is in [CHANGELOG.md](CHANGELOG.md) and the per-feature
+[COMPILER.md](COMPILER.md) coverage table. Shipped to date: **0.1.0**, **0.2.0**, **0.3.0**, and
+**0.4.0** (the relational shapes + PGx/PGS/PharmGKB, materialized). The "Planned for 0.4" section
+below is the design brief that 0.4.0 realized — kept for the rationale, not because it is unbuilt.
 
 ## Shipped in 0.1.0
 
@@ -75,7 +78,7 @@ clinical tier gets its own **`clin_sig`** column. See *Reserved namespace* and *
 Scoping note: the `state`-split alone (item 1) is just additive columns — a **0.2.1 patch** that can
 ship on its own. **0.3 = items 1–6 + 5b + the upgrade derivation** (additive columns on the existing
 CSVs). **0.4 = the relational shapes (items 7, 7b) + PGx star-alleles + PharmGKB** — new file kinds,
-consumer-gated, a detailed plan to be vetted with grounding to come. Item 8 (PGS) stays note-only.
+consumer-gated, a detailed plan to be vetted with grounding to come. Item 8 (PGS) was note-only through 0.3 and shipped its full shape (`PgsRow`) in 0.4.0.
 Worked drafts for all of these live in [REFERENCE_EXAMPLES.md](REFERENCE_EXAMPLES.md).
 
 ### 0.3 feasibility & sequencing (dogfooded against the repo)
@@ -138,13 +141,16 @@ parquets (compiler.py:41).
 | 5b | **Widen `genotype`: hemizygous + phased** | The `genotype` validator today hard-codes a **diploid** locus: exactly two `/`-separated `^[ACGT]+$` alleles, `\|` forbidden (`spec.py:157-173`). That cannot express a **hemizygous** call — non-PAR X/Y in males is a single copy, so `A/A` is a semantic lie (2 copies, not 1). Widen the validator to *also* accept (a) a **single allele** (`A`) for hemizygous loci, and (b) the **phased** form `A\|G` (which item 7 needs). **Additive**: widening acceptance never invalidates existing two-allele rows, and the artifact already stores `genotype` as `List[str]` in `weights.parquet` — so this fits a 0.x. Caveat: consumers that *assume* exactly two alleles rely on today's shape, so the widened forms are opt-in and documented. Ploidy *application* (which loci are hemizygous for this sample — sex, karyotype) stays a **consumer** concern; the format only makes the hemizygous call *representable*. Validated by the G6PD dogfood: the author enumerates *both* cardinalities at an X-linked locus (a single-allele hemizygous row **plus** the diploid `T/T`/`C/T`/`C/C` rows), and the consumer matches the sample's actual allele count. Two refinements the dogfood forced: (a) the single-allele genotype *is* the hemizygous signal on chrom X/Y, so the reserved `hemizygous` **flag is redundant** — drop it; (b) widen the compiler's `genotype.split("/")` (compiler.py:508) to handle `\|` and single alleles. Guardrail: **warn on a two-allele genotype at an `MT` (or non-PAR X/Y) locus** — the accepted-chromosome trap. See *Non-diploid & non-SNV loci* below. |
 | 6 | **`clin_sig` — clinical tier, aliasing the lossy booleans** | New `VariantRow.clin_sig: Optional[str]` (VEP's exact field name), vocab `{pathogenic, likely_pathogenic, uncertain_significance, likely_benign, benign, drug_response, association, risk_factor, protective, affects, conflicting, not_provided, other}`. The lossy `pathogenic`/`benign` booleans become **derived aliases** (`clin_sig∈{pathogenic,likely_pathogenic}⇒pathogenic=True`; `{benign,likely_benign}⇒benign=True`) — booleans can't express `likely_*`/`uncertain`, and doing it now avoids a second migration. `clinvar` stays a **provenance** boolean ("is it *in* ClinVar?"), orthogonal to the tier. Align `GenePanelSpec.significance` to this exact vocab so the two spellings never diverge. Distinct from `direction` (ClinVar's `protective`/`risk_factor` decompose *out* to `direction`) and `stat_significance`: three axes, three columns. |
 
-## Planned for 0.4 — relational shapes & PGx (detailed plan; grounding to come, to be vetted)
+## Planned for 0.4 — relational shapes & PGx — ✅ shipped in 0.4.0
 
-**Expectation (write-down).** The items below are **rescoped from 0.3 to 0.4**. They are a
-*spec-led* design: the spec deliberately runs **ahead of implementation** (a proper state of things —
-consumer gates are expected, not blockers). The maintainer will **provide grounding** (real
-star-allele / diplotype / CNV datasets and consumer needs) to push these forward; 0.4 is then a
-**detailed plan to be vetted**, not a build-on-sight.
+**Status: SHIPPED.** The items below were rescoped from 0.3 to 0.4 and then **built and materialized
+in 0.4.0** — the binning primitive, the four-table PGx star-allele model, `PharmVariantRow`, `PgsRow`,
+the `VariantRow` general axes, composed modules (RM2), and table-level coherence all ship (see
+[CHANGELOG.md](CHANGELOG.md) and [COMPILER.md](COMPILER.md)'s 0.4 coverage table). The prose below is
+kept as the **design brief** that 0.4.0 realized — the rationale and prior-art grounding, not an
+un-started plan. Everything here stays **opt-in**: a plain `variants.csv` module ignores this layer,
+and the shapes remain **inert until a consumer does the calling** (diplotype/CNV/star-allele calling
+lives in just-dna-lite) — an expected consumer gate, not a blocker.
 
 Affirmed design calls: (1) **keeping this table-modular is correct** — lookup tables, not a new row
 type per exception; (2) **star-strings as the canonical allele-unit identity** are the natural choice
@@ -154,7 +160,8 @@ Worked drafts: [REFERENCE_EXAMPLES.md](REFERENCE_EXAMPLES.md).
 
 ### New relational shapes
 
-- **Item 7 — Diplotype / haplotype (two new lookup-table CSVs; design captured, not built).**
+- **Item 7 — Diplotype / haplotype (two new lookup-table CSVs; ✅ shipped in 0.4.0 as
+  `haplotypes.csv` + `diplotypes.csv`, materialized).**
   `haplotypes.csv` = `haplotype_name, rsid, allele` (a haplotype is its set of defining *cis*
   alleles: APOE ε4 = {rs429358:C, rs7412:C}).
   `diplotypes.csv` = `haplotype_a, haplotype_b, trait_efo_id, phenotype, direction,
@@ -184,8 +191,10 @@ Worked drafts: [REFERENCE_EXAMPLES.md](REFERENCE_EXAMPLES.md).
   `gene, copy_number, direction, stat_significance, clin_sig, phenotype, trait_efo_id, conclusion`.
   So it does **not** fit `VariantRow` (which requires an identifier + a genotype) — it is a **new
   lookup-table CSV**, the same additive pattern as item 7 (add `copynumbers.parquet` to
-  `_OUTPUT_FILES`). Also add an optional `VariantRow.copy_number: Optional[int]` for the rarer case
-  where a specific variant carries a dosage context. **Why this only *partly* answers "cover #7 with
+  `_OUTPUT_FILES`). *(Superseded in 0.4.0: there is **no** `copy_number` column — a sharp copy number
+  is `measure_min == measure_max` on `CopyNumberRow`; see [CHANGELOG.md](CHANGELOG.md) and
+  [PROPOSAL_0_4.md](PROPOSAL_0_4.md). `copy_number`-as-a-measured-value was rejected — the module
+  never holds the measurement.)* **Why this only *partly* answers "cover #7 with
   0.3":** (1) exactly like item 7, it is **inert until a consumer calls CNVs** from the input and
   matches them — a curator can author the table now, but nothing resolves against it until
   just-dna-lite gains CNV calling (the same consumer gate that deferred the diplotype *build*);
@@ -195,7 +204,11 @@ Worked drafts: [REFERENCE_EXAMPLES.md](REFERENCE_EXAMPLES.md).
   dosage with *no allele identity* (SMN1 SMA — just count functional copies); dosage of a *specific
   phased star-allele* (CYP2D6) is a different beast — see *PGx star-alleles & copy number* below.
 
-- **Item 8 — PGS (note only; no columns pinned this run).** A curated PGS module is **a manifest of
+- **Item 8 — PGS (✅ shipped in 0.4.0 as `PgsRow` / `pgs.csv`).** The note below is the original
+  design rationale; the full shape (`pgs_id`, `trait_efo_id`, `note`, `group`, plus the ancestry-
+  validity fields `training_ancestry`/`training_cohort`/`match_rate_floor`/`research_tier`) was frozen
+  and materialized in 0.4.0 — it is a *declared interface* (like `GenePanelSpec`), not a binning
+  table. A curated PGS module is **a manifest of
   PGS Catalog IDs, not authored weights** — just-prs resolves `PGSxxxxxx` → a harmonized scoring
   file itself and has **no combine-into-one-score primitive** (`compute_prs_batch` scores each ID
   independently), so per-PGS relative weights would be dead data. Eventual MVP shape `pgs.csv` =
@@ -315,8 +328,9 @@ home, deliberately not built in 0.3:
   deferred. `MT` is *already* in `VALID_CHROMOSOMES`, so a two-allele MT genotype (fake diploid) is a
   latent trap → the item-5b guardrail warns on it.
 - **CNV / gene dosage** — copy number ≠ 2 (SMN1; CYP2D6 duplications/deletions). **Simple dosage**
-  (SMN1) now has a 0.3 home — the `copynumbers.csv` shape + optional `VariantRow.copy_number` (item
-  7b) — but it stays **inert until a consumer calls CNVs**. **CYP2D6-style CN star-alleles** (copy
+  (SMN1) now has a home — the `copynumbers.csv` / `CopyNumberRow` shape (item 7b), a sharp dosage
+  being `measure_min == measure_max` (no `copy_number` column; superseded in 0.4.0) — but it stays
+  **inert until a consumer calls CNVs**. **CYP2D6-style CN star-alleles** (copy
   number on a haplotype) need copy-number-aware haplotypes and remain in item 7's deferred scope.
 - **Repeat expansions** — the "genotype" is a `repeat_count`, pathogenic above a threshold; a sequence
   regex can't express "42 CAG".

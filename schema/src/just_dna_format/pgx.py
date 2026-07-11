@@ -29,6 +29,7 @@ from just_dna_format.vocab import (
     VALID_EVIDENCE_LEVELS,
     check_vocab,
     validate_allele,
+    validate_finite,
     validate_rsid,
     validate_trait_ids,
 )
@@ -118,6 +119,11 @@ class AlleleFunctionRow(BaseModel):
         if not STAR_ALLELE_PATTERN.match(v):
             raise ValueError(f"allele must be a star-allele string like *4 or *36+*10, got: {v!r}")
         return v
+
+    @field_validator("activity_value")
+    @classmethod
+    def _validate_activity_value(cls, v: Optional[float]) -> Optional[float]:
+        return validate_finite(v, "activity_value")
 
     @field_validator("function_status")
     @classmethod

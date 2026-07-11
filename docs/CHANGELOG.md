@@ -5,11 +5,43 @@ Shared change log for the just-dna module format/compiler ecosystem. Because
 **just-dna-marketplace**, and **just-dna-agents**, cross-repo integration changes are recorded
 here so parallel work in the other repos isn't surprised. Newest first.
 
-## 2026-07-10 — 0.4 (unpublished) — quantitative tables + composed modules
+## 2026-07-11 — 0.4.0 (unpublished) — round-trip hardening + audit fixes
+
+A correctness/robustness pass over the 0.4 work, before publish. Packages bumped **0.3.0 → 0.4.0**
+(the `just-dna-format` / `just-dna-compiler` versions now match the milestone the code already
+implements). **`schema_version` stays `"1.0"`.** Still unpublished, so the `artifact.digest` changes
+below are free to absorb.
+
+- **Round-trip fidelity fixes (CONSTITUTION Principle 7).** Four shapes silently round-tripped wrong
+  — the happy path (rsid-keyed, uniform priority, no explicit-`False` booleans) stayed green, so the
+  invariant was only nominally tested:
+  - **Position-only study rows** (`rsid` null, `chrom`/`start`/`ref` set) were dropped on compile and
+    made *recompile fail*; `studies.parquet` now carries the position columns.
+  - **Position-only variant annotations** (gene/phenotype/category) were lost because the reverse
+    lookup keyed on the null `rsid`; `annotations.parquet` now carries an explicit `variant_key`.
+  - **`priority`** was fabricated on reverse (an unset row inherited the mode as an inferred default,
+    turning `['high', null]` into `['high', 'high']`); it is now written verbatim.
+  - **ClinVar booleans** (`clinvar`/`pathogenic`/`benign`) collapsed an authored `False` to `None`;
+    they are now materialized tri-state (nullable), matching the 0.4 axes.
+- **Resolver fix.** A position-only-without-`ref` variant never resolved its rsid even on an Ensembl
+  hit (the result was keyed by the DB ref, the lookup by `chrom:start:None`) — keys now reconcile.
+- **Input hardening.** `start` positions are `ge=0` (a negative position is a clean validation error,
+  not a polars `UInt32` overflow); `weight`/`effect_size`/measure bounds/`activity_value`/
+  `match_rate_floor` reject non-finite floats (`NaN`/`inf`) that broke round-trip equality.
+- **Tests (+20).** New round-trip regressions for every shape above; resolver unit tests over a
+  **synthetic** parquet cache (the resolver + cache were previously covered only by
+  integration-gated tests that skip in CI); `aggregate_provenance`, continuous-fraction coverage-gap,
+  and several untriggered validator/error branches.
+- **Docs reconciled with shipped code.** ROADMAP no longer frames 0.4 as unbuilt / PGS as note-only /
+  a `VariantRow.copy_number` field that was rejected; READMEs describe composed modules (not a fixed
+  three-parquet artifact) and the full dependency lists; the CONSTITUTION dependency-tier goal and
+  `CLAUDE.md` acknowledge `cryptography` alongside `pydantic`.
+
+## 2026-07-10 — 0.4 quantitative tables + composed modules
 
 Additive 0.4 schema shapes (frozen per `docs/PROPOSAL_0_4.md`) with full compiler materialization.
 **`schema_version` stays `"1.0"`** — every 0.1–0.3 module keeps validating; all new tables/columns
-are optional. 0.4 is **unpublished**, so the one-time `artifact.digest` move is still free to absorb.
+are optional.
 
 - **The measure→phenotype binning primitive** (`just_dna_format.binning`): one shared column
   vocabulary (`measure_kind`, inclusive `[measure_min, measure_max]`, `direction`/`clin_sig`/

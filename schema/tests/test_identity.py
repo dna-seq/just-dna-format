@@ -68,6 +68,12 @@ def test_legacy_mapping(legacy: str, expected: str) -> None:
     assert version_from_legacy(legacy) == expected
 
 
+def test_legacy_mapping_rejects_bad_input() -> None:
+    for bad in ["release-1", "v", "1.2", ""]:
+        with pytest.raises(ValueError):
+            version_from_legacy(bad)
+
+
 def test_latest_picks_highest() -> None:
     assert latest(["1.0.0", "2.0.0", "1.10.0", "1.2.0"]) == "2.0.0"
     with pytest.raises(ValueError):
