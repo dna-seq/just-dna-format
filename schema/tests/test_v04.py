@@ -30,8 +30,8 @@ from just_dna_format.pgx import (
     HaplotypeRow,
     PharmVariantRow,
 )
-from just_dna_format.spec import VariantRow
-from just_dna_format.vocab import RESERVED_NAMES_0_4
+from just_dna_format.spec import StudyRow, VariantRow
+from just_dna_format.vocab import RESERVED_NAME_REASONS, RESERVED_NAMES_0_4
 
 
 # ── binning primitive ───────────────────────────────────────────────────────────────────────────
@@ -184,17 +184,58 @@ def test_pgs_vocabularies_are_frozen() -> None:
     assert VALID_RESEARCH_TIERS == frozenset({"research_only", "calibrated"})
 
 
-# ── reserved-namespace boundary + model-level round-trip (Principle 7) ──────────────────────────
-def test_reserved_names_are_rejected_until_built() -> None:
-    # Shrunk to the provenance triple + callable_from; the other three retired into VariantRow columns.
-    assert RESERVED_NAMES_0_4 == frozenset(
-        {"caller", "caller_version", "reference_db", "callable_from"}
-    )
+# ── reserved-namespace boundary: reserved ≠ arbitrary at the point of failure ───────────────────
+# The `reject_reserved` before-validator (layered on `extra="forbid"`) is what gives the reserved list
+# build-time value beyond being a published dictionary: a reserved column fails with a *specific*
+# diagnosis, a random/typo'd column with the generic message. Asserted uniformly across every authored
+# model — one valid construction each, then a bad column injected.
+_AUTHORED_MODELS = [
+    (VariantRow, dict(rsid="rs1", genotype="A/G", state="risk", conclusion="x")),
+    (StudyRow, dict(rsid="rs1", pmid="123")),
+    (RepeatAlleleRow, dict(gene="HTT", repeat_unit="CAG", measure_min=40, conclusion="x")),
+    (HaplotypeRow, dict(haplotype_name="*4", rsid="rs1", allele="A")),
+    (AlleleFunctionRow, dict(gene="CYP2D6", allele="*4")),
+    (DiplotypeRow, dict(gene="CYP2D6", haplotype_a="*1", haplotype_b="*4", conclusion="x")),
+    (PharmVariantRow, dict(rsid="rs1", drug="warfarin", conclusion="x")),
+    (PgsRow, dict(pgs_id="PGS000135")),
+]
+
+
+def _validation_message(model, **kwargs) -> str:
+    with pytest.raises(ValidationError) as exc:
+        model(**kwargs)
+    return str(exc.value)
+
+
+def test_reserved_set_is_the_expected_shape() -> None:
+    # Only genuine anticipated MODULE-side axes are reserved: `reference_db` (join-target DB hint) and
+    # `callable_from` (RM6). `caller`/`caller_version` were DROPPED — they name a consumer-side
+    # measurement (which tool made a call), so there is no future module axis to reserve, and barring
+    # them by name would be arbitrary; `extra="forbid"` rejects them generically like any stray column.
+    assert RESERVED_NAMES_0_4 == frozenset({"reference_db", "callable_from"})
+    assert set(RESERVED_NAME_REASONS) == RESERVED_NAMES_0_4  # every reserved name has a reason
+
+
+@pytest.mark.parametrize("model, valid", _AUTHORED_MODELS)
+def test_reserved_name_fails_with_specific_diagnosis(model, valid) -> None:
     for name in RESERVED_NAMES_0_4:
-        with pytest.raises(ValidationError):
-            RepeatAlleleRow(
-                gene="HTT", repeat_unit="CAG", measure_min=40, conclusion="x", **{name: "v"}
-            )
+        msg = _validation_message(model, **valid, **{name: "v"})
+        assert "reserved column name" in msg, (model.__name__, name, msg)
+        # the withheld-reason is surfaced verbatim, so the author learns *why* it is not theirs to use
+        assert RESERVED_NAME_REASONS[name] in msg, (model.__name__, name, msg)
+    assert model(**valid)  # a valid row (no reserved column) still constructs
+
+
+@pytest.mark.parametrize("model, valid", _AUTHORED_MODELS)
+def test_arbitrary_or_typo_column_gets_generic_message_not_reserved(model, valid) -> None:
+    # A random or misspelled column is still rejected (extra="forbid"), but with the GENERIC message —
+    # never the reserved diagnosis. This is the distinction the reserved list buys. `caller`/
+    # `caller_version` are here on purpose: dropped from the reserved set, they are now treated like
+    # any other stray column (a consumer-side name the module simply doesn't know), not specially barred.
+    for bad in ("xyzzy_random", "directon", "populaton", "caller", "caller_version"):
+        msg = _validation_message(model, **valid, **{bad: "v"})
+        assert "Extra inputs are not permitted" in msg, (model.__name__, bad, msg)
+        assert "reserved column name" not in msg, (model.__name__, bad, msg)
 
 
 # ── adoption pass: 3 general axes on VariantRow ─────────────────────────────────────────────────

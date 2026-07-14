@@ -8,13 +8,13 @@ flow) can import these pure functions without an import cycle.
 `state` and the ClinVar booleans stay **required/authoritative** for 0.2 backward-compat
 (CONSTITUTION Principle 3 forbids making a required field optional inside a major); the new axes are
 optional, with these derivations as their fallback. Every function here is **total and idempotent**:
-applying it to an already-derived value is a no-op (CONSTITUTION Principle 7). See docs/ROADMAP.md
-→ "Planned for 0.3" (item 1, item 6, and the "Upgrade derivation" table).
+applying it to an already-derived value is a no-op (CONSTITUTION Principle 7). See the
+"Upgrade derivation" section of docs/COMPILER.md.
 """
 
 from typing import Optional
 
-# ROADMAP "Upgrade derivation" table: legacy `state` → (direction, stat_significance).
+# The "Upgrade derivation" mapping (docs/COMPILER.md): legacy `state` → (direction, stat_significance).
 _STATE_TO_DIRECTION: dict[str, str] = {
     "protective": "protective",
     "risk": "risk",

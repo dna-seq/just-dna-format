@@ -1,6 +1,8 @@
 """
-Module spec compiler: validates a spec directory and compiles it to the three-parquet artifact
-(weights, annotations, studies) plus a `manifest.json`.
+Module spec compiler: validates a spec directory and compiles it to a composed multi-parquet
+artifact plus a `manifest.json`. A module composes from optional table kinds (RM2): the three-parquet
+SNP core (weights, annotations, studies) when it carries variants, plus one parquet per 0.4 table
+kind it includes (diplotypes, pharm_variants, pgs, the binning kinds, …) — up to twelve in all.
 
 Public API:
     validate_spec(spec_dir) -> ValidationResult
@@ -90,9 +92,9 @@ _TABLE_KIND_CSVS: tuple[str, ...] = tuple(csv for csv, _, _ in _TABLE_KINDS)
 # `PgsRow`/`DiplotypeRow`/`PharmVariantRow` key includes `trait_efo_id`/`drug` so a legitimately
 # pleiotropic or multi-drug row is not a false duplicate.
 _TABLE_DUPE_KEYS: dict[type[BaseModel], Callable[[Any], tuple]] = {
-    HaplotypeRow: lambda r: (r.haplotype_name, r.rsid or f"{r.chrom}:{r.start}", r.allele),
+    HaplotypeRow: lambda r: (r.haplotype_name, r.rsid or f"{r.chrom}:{r.start}:{r.ref}", r.allele),
     AlleleFunctionRow: lambda r: (r.gene, r.allele),
-    DiplotypeRow: lambda r: (r.gene, r.haplotype_a, r.haplotype_b, r.trait_efo_id),
+    DiplotypeRow: lambda r: (r.gene, r.haplotype_a, r.haplotype_b, r.trait_efo_id, r.drug),
     PgsRow: lambda r: (r.pgs_id, r.trait_efo_id),
     PharmVariantRow: lambda r: (r.variant_key, r.drug),
 }
@@ -935,7 +937,7 @@ def _build_studies(studies: list[StudyRow], module_name: str) -> pl.DataFrame:
                 "effect_size": s.effect_size,
                 "effect_measure": s.effect_measure,
                 "trait_efo_id": s.trait_efo_id,
-                # ── 0.5 additive provenance columns (RM11/RM12; docs/USE_CASES.md §4a). ──
+                # ── 0.4 provenance columns (RM11/RM12, from the 0.5 scope; docs/USE_CASES.md §4a). ──
                 "doi": s.doi,
                 "provenance_quote": s.provenance_quote,
                 "provenance_regex": s.provenance_regex,
@@ -1171,7 +1173,7 @@ def _write_studies_csv(studies_df: pl.DataFrame, output_path: Path) -> None:
         "study_design",
         # 0.3 additive columns
         "stat_significance", "effect_size", "effect_measure", "trait_efo_id",
-        # 0.5 additive provenance columns (RM11/RM12)
+        # 0.4 provenance columns (RM11/RM12, from the 0.5 scope)
         "doi", "provenance_quote", "provenance_regex",
     ]
     with open(output_path, "w", encoding="utf-8", newline="") as f:

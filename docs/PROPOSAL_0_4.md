@@ -109,6 +109,14 @@ grounds (not a Constitution invariant, but firm). This is why B4's modifier is t
 
 ## T2 — caller provenance triple (reserved)
 
+> **Superseded (post-0.4 review).** The framing below — reserve the triple so "any table carrying a
+> computed call can adopt them" — contradicts the data-agnostic north star: a module never carries a
+> call. On review, `caller`/`caller_version` were **dropped** from the reserved namespace (they name a
+> consumer-side measurement; a module never holds them, and barring the bare name is arbitrary among
+> unbounded non-features). `reference_db` was **kept** but re-scoped to its genuine module-side meaning
+> — a hint naming which reference DB the app should join against — not the caller-provenance meaning
+> below. See ROADMAP "Reserved namespace" for the settled state.
+
 Accepted as a **reserved-namespace convention**, not new required columns. A diplotype / CN / repeat
 / heteroplasmy call is a *computed* quantity; which tool produced it is load-bearing. We reserve the
 names `caller`, `caller_version`, `reference_db` so any table carrying a computed call can adopt them

@@ -67,6 +67,32 @@ def test_unknown_rsid_warns_and_leaves_unset(cache: Path) -> None:
     assert any("rs99999999" in w for w in warnings)
 
 
+@pytest.fixture
+def multiallelic_cache(tmp_path: Path) -> Path:
+    # Two dbSNP ids share the SAME (chrom, start) but differ by ref — a multi-allelic site.
+    data = tmp_path / "cache" / "data"
+    data.mkdir(parents=True)
+    pl.DataFrame(
+        {
+            "id": ["rs200", "rs100"],  # deliberately out of sorted order in the source
+            "chrom": ["1", "1"],
+            "start": [500, 500],
+            "ref": ["G", "A"],
+            "alt": ["T", "C"],
+        }
+    ).write_parquet(data / "chr.parquet")
+    return tmp_path / "cache"
+
+
+def test_refless_multiallelic_resolves_deterministically_and_warns(multiallelic_cache: Path) -> None:
+    # A ref-less position over a multi-allelic site is genuinely ambiguous. Resolution must be
+    # deterministic (ORDER BY chrom,start,ref,id picks the ref='A' row → rs100 regardless of source
+    # row order or run) and must surface a warning rather than silently guessing.
+    patched, warnings = resolve_variants([_v(chrom="1", start=500)], multiallelic_cache)
+    assert patched[0].rsid == "rs100"
+    assert any("multiple dbSNP ids" in w and "1:500" in w for w in warnings), warnings
+
+
 def test_no_cache_skips_with_warning(tmp_path: Path) -> None:
     # An empty dir is not a usable reference: resolution is skipped (never a download), with a
     # warning, and the variants come back untouched.

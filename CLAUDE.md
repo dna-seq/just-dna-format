@@ -82,6 +82,21 @@ cycle* in `USE_CASES.md`.
   guarded module-level `try/except ImportError` for optional deps is the only exception).
 - Pydantic 2 for all data models. Constrained vocabularies are `frozenset[str]` + a validator, never
   `Enum`/`Literal` (Principle 6).
+- **Authored row models inherit `AuthoredModel`** (`just_dna_format.base`), never `BaseModel` directly.
+  It carries the reserved-namespace guard (`extra="forbid"` + the `reject_reserved` before-validator)
+  and the shared field validators (`rsid`/`trait_efo_id`/`direction`/`clin_sig`/`stat_significance`/
+  `evidence_level`/finite-`effect_size`). Don't re-declare `model_config` or re-copy those validators
+  per model (that per-model duplication is the anti-pattern being unwound); when a validator is
+  identical across ≥2 models, move it onto the base with `check_fields=False`. Keep only field-specific
+  rules on each model.
+- **The reserved namespace (`vocab.RESERVED_NAMES_0_4`) is only for names expected to become real
+  module columns later** (Principle 5) — *not* a catalogue of barred names. `extra="forbid"` already
+  rejects any unknown/misspelled column generically, so barring a specific non-feature is arbitrary
+  (barring `caller` is as pointless as barring `pasta_recipe`). Before reserving a name, ask: *will a
+  release plausibly build this as a module column?* A reserved name earns a specific author-time
+  diagnosis (`vocab.RESERVED_NAME_REASONS` via `reject_reserved`); everything else gets the generic
+  message. (This is why `caller`/`caller_version` were dropped — consumer-side measurement provenance
+  with no module-side meaning — while `reference_db`, a join-target-DB hint, was kept.)
 - **Additive within a major** (Principles 3/8): new columns are optional; a required field is never
   demoted; anything that changes `artifact.digest` bytes (parquet column set/types) is major-only —
   *except* while a version is still unpublished, where the digest is not yet frozen.
@@ -93,4 +108,5 @@ cycle* in `USE_CASES.md`.
 
 `just-dna-pipelines` (compiler/discovery, depends on these libs), `just-dna-lite` (app + webui, the
 reference consumer), `just-dna-marketplace` (catalog/storage/serving; consumes the `revalidate`/
-`needs_upgrade` derivation these libs supply), `just-prs`.
+`needs_upgrade` derivation these libs supply), `just-dna-agents` (MCP surface — its `get_spec_format`/
+`list_colors`/`list_icons` are the drift `authoring_reference()`/`RECOMMENDED_*` replace), `just-prs`.

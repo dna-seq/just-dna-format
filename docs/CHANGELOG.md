@@ -5,6 +5,60 @@ Shared change log for the just-dna module format/compiler ecosystem. Because
 **just-dna-marketplace**, and **just-dna-agents**, cross-repo integration changes are recorded
 here so parallel work in the other repos isn't surprised. Newest first.
 
+## 2026-07-15 — 0.4.0 (unpublished) — branch-review fixes
+
+A second correctness/consistency pass over the 0.4 branch before publish (still unpublished, so all
+of the below is free to absorb). Each fix ships with a regression test.
+
+- **PGx diplotypes with multiple drug annotations now compile.** The per-table duplicate-row key for
+  `DiplotypeRow` omitted `drug`, so two legitimate rows for one haplotype pair differing only by drug
+  (e.g. CYP2D6 `*1/*1` → codeine and → tramadol) were wrongly rejected as duplicates and the whole
+  module failed to compile. The key now includes `drug` (matching its own comment and the intended
+  authoring pattern). `HaplotypeRow`'s key likewise gained `ref`, so two position-only defining
+  variants at the same locus differing only by reference allele no longer false-collide.
+- **Reserved-namespace enforcement extended to the SNP core.** `VariantRow`/`StudyRow` now enforce
+  `extra="forbid"` (via the shared `AuthoredModel` base below), matching the 0.4 composed tables — the
+  ROADMAP tracker previously scoped rejection to "the 0.4 tables" only, so the core defaulted to
+  `extra="ignore"` and a genuinely-reserved name (or a misspelled column like `directon`) was silently
+  dropped rather than rejected. Now caught at validate time. A **hardening** in the spirit of
+  CONSTITUTION P5 (reserve names so they survive the one-way door) + P3 (names permanent within a
+  major) — the charter mandates reserve+audit, not runtime rejection, so this is a strengthening, not a
+  charter-forced fix.
+- **The reserved list now has build-time teeth, not just a published dictionary.** A `reject_reserved`
+  before-validator (`vocab.py`), layered on `extra="forbid"` on every authored model, makes a reserved
+  name fail with a *specific* diagnosis — what the name is reserved for (`vocab.RESERVED_NAME_REASONS`)
+  and that a future release may claim it — while a random or misspelled column still gets the generic
+  "extra inputs not permitted". So `reference_db` ≠ `xyzzy` at the point of failure, at author time and
+  in the compile errors, for both a human and an authoring agent. Previously the frozenset drove no
+  validation behavior at all (consulted only by `authoring_reference()`); now reserved vs. arbitrary is
+  a real distinction the maintainer's list produces.
+- **Reserved set corrected: `caller`/`caller_version` dropped, `reference_db` re-scoped.** The
+  "provenance triple" (round-2 Q2, PROPOSAL_0_4 §T2) was a category error: `caller`/`caller_version`
+  name which tool produced a *call* — a consumer-side measurement the module never holds — so there is
+  no anticipated module axis to reserve, and barring the bare name is arbitrary (one non-feature among
+  unbounded non-features; `extra="forbid"` already rejects them generically). They are removed from
+  `RESERVED_NAMES_0_4`, which is now *only* genuine anticipated module axes: **`reference_db`** —
+  re-scoped to its real module-side meaning, a hint naming which reference DB the app should join an
+  annotation against (implicit Ensembl/ClinVar today; pinnable per module) — and **`callable_from`**
+  (RM6). PROPOSAL_0_4 §T2 carries a superseded note.
+- **DRY: single `AuthoredModel` base** (`base.py`). The reserved-namespace guard (`extra="forbid"` +
+  `reject_reserved`) and the field validators for the shared authored vocabulary (`rsid`,
+  `trait_efo_id`, `direction`, `clin_sig`, `stat_significance`, `evidence_level`, finite-`effect_size`)
+  were copy-pasted across `spec`/`binning`/`pgx`/`pgs` (~22 duplicated validators + 8 `model_config` +
+  8 guards). They now live once on `AuthoredModel`; each row model inherits it and keeps only its
+  field-specific rules (genotype/phase, star-allele strings, measure bounds, PGS ancestry, the mtDNA
+  legacy-reference guard, identifier completeness). `check_fields=False` means a validator runs only
+  for the fields a subclass actually declares, so per-field rules can no longer drift model-to-model.
+- **Deterministic ref-less rsid resolution.** In the inject-a-reference path, a ref-less position over
+  a multi-allelic dbSNP site was resolved to whichever row the DB returned first (no `ORDER BY`) — a
+  latent idempotency risk, silent. It now resolves deterministically and emits an ambiguity warning
+  telling the author to specify `ref` to disambiguate.
+- **Doc/comment consistency:** the compiler module docstring now describes the composed multi-parquet
+  artifact (not a fixed three-parquet one); the COMPILER.md coverage header reads "0.3 / 0.4 feature"
+  and its dangling "Upgrade derivation" ROADMAP pointer is removed; the ROADMAP 0.5-scope table no
+  longer describes its shipped ✅ rows as "still open"; `just-dna-agents` is listed among related repos
+  in CLAUDE.md; and the RM11/RM12 provenance-column comments read "0.4 (from the 0.5 scope)".
+
 ## 2026-07-11 — 0.4.0 (unpublished) — round-trip hardening + audit fixes
 
 A correctness/robustness pass over the 0.4 work, before publish. Packages bumped **0.3.0 → 0.4.0**

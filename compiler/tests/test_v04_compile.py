@@ -307,6 +307,84 @@ def test_duplicate_diplotype_rejected(tmp_path: Path) -> None:
     assert any("duplicate row" in e for e in result.errors), result.errors
 
 
+def test_multi_drug_diplotype_is_not_a_false_duplicate(tmp_path: Path) -> None:
+    """A diplotype pair carrying two different drug annotations is a legitimate authoring pattern,
+    not a duplicate: the dedup key must include `drug` (compiler.py `_TABLE_DUPE_KEYS`)."""
+    spec = tmp_path / "multidrug"
+    spec.mkdir()
+    (spec / "module_spec.yaml").write_text(_YAML.replace("composed", "multidrug"), encoding="utf-8")
+    # Same gene + same (canonicalized) haplotype pair, same trait (none) — differ only by `drug`.
+    (spec / "diplotypes.csv").write_text(
+        "gene,haplotype_a,haplotype_b,phenotype,conclusion,drug,response,evidence_level\n"
+        "CYP2D6,*1,*1,NM,normal codeine activation,codeine,normal analgesia,1A\n"
+        "CYP2D6,*1,*1,NM,normal tramadol activation,tramadol,normal analgesia,1A\n",
+        encoding="utf-8",
+    )
+    result = validate_spec(spec)
+    assert result.valid, result.errors
+    # But two rows with the SAME drug are still a real duplicate.
+    (spec / "diplotypes.csv").write_text(
+        "gene,haplotype_a,haplotype_b,phenotype,conclusion,drug,response,evidence_level\n"
+        "CYP2D6,*1,*1,NM,first,codeine,normal analgesia,1A\n"
+        "CYP2D6,*1,*1,NM,dup same drug,codeine,normal analgesia,1A\n",
+        encoding="utf-8",
+    )
+    dup = validate_spec(spec)
+    assert not dup.valid
+    assert any("duplicate row" in e for e in dup.errors), dup.errors
+
+
+def test_position_only_haplotypes_differ_by_ref(tmp_path: Path) -> None:
+    """Two position-only haplotype rows sharing (name, chrom, start, allele) but differing by `ref`
+    are distinct variants, not a false collision: the dedup key must include `ref`."""
+    spec = tmp_path / "haplo"
+    spec.mkdir()
+    (spec / "module_spec.yaml").write_text(_YAML.replace("composed", "haplo"), encoding="utf-8")
+    (spec / "haplotypes.csv").write_text(
+        "haplotype_name,chrom,start,ref,allele,gene\n"
+        "*2,22,42130692,C,A,CYP2D6\n"
+        "*2,22,42130692,G,A,CYP2D6\n",
+        encoding="utf-8",
+    )
+    result = validate_spec(spec)
+    assert result.valid, result.errors
+
+
+def test_reserved_column_gives_specific_compile_error_typo_gives_generic(tmp_path: Path) -> None:
+    """Build-time payoff: a reserved column in a CSV surfaces the *specific* reserved diagnosis in the
+    compile errors (not the generic extra-forbid message a typo gets), so an author is told what the
+    name is for and why it is not theirs to use — without opening the schema."""
+    spec = tmp_path / "spec"
+    spec.mkdir()
+    (spec / "module_spec.yaml").write_text(_YAML, encoding="utf-8")
+    (spec / "studies.csv").write_text(_STUDIES, encoding="utf-8")
+
+    # A reserved name on variants.csv → specific diagnosis.
+    (spec / "variants.csv").write_text(
+        "rsid,genotype,state,conclusion,reference_db\n"
+        "rs1,A/G,risk,x,pharmvar-6.2.14\n",
+        encoding="utf-8",
+    )
+    reserved = validate_spec(spec)
+    assert not reserved.valid
+    assert any(
+        "reserved column name" in e and "reference_db" in e for e in reserved.errors
+    ), reserved.errors
+
+    # A typo of a real column, AND a dropped consumer-side name (`caller`), both → generic extra-forbid
+    # message, never the reserved diagnosis. `caller` is no longer specially barred.
+    for stray in ("directon", "caller"):
+        (spec / "variants.csv").write_text(
+            f"rsid,genotype,state,conclusion,{stray}\n"
+            "rs1,A/G,risk,x,v\n",
+            encoding="utf-8",
+        )
+        result = validate_spec(spec)
+        assert not result.valid
+        assert any("Extra inputs are not permitted" in e for e in result.errors), (stray, result.errors)
+        assert not any("reserved column name" in e for e in result.errors), (stray, result.errors)
+
+
 def test_module_authorship_carried_into_manifest(tmp_path: Path) -> None:
     """RM14: an `authorship:` block in module_spec.yaml reaches manifest.json verbatim (§5a)."""
     spec = tmp_path / "authored"

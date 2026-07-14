@@ -23,6 +23,7 @@ from just_dna_format.derive import (
     stat_significance_from_state,
     trimmed_state,
 )
+from just_dna_format.base import AuthoredModel
 from just_dna_format.identity import validate_name
 from just_dna_format.manifest import SCHEMA_VERSION, Contribution, Display, GenePanelSpec
 from just_dna_format.vocab import (
@@ -34,8 +35,6 @@ from just_dna_format.vocab import (
     check_vocab,
     validate_allele,
     validate_finite,
-    validate_rsid,
-    validate_trait_ids,
 )
 from just_dna_format.vocab import MULTI_SEP as _MULTI_SEP
 
@@ -136,8 +135,12 @@ class ModuleSpecConfig(BaseModel):
         return v
 
 
-class VariantRow(BaseModel):
-    """One row of variants.csv. At least one identifier (rsid or chrom+start) is required."""
+class VariantRow(AuthoredModel):
+    """One row of variants.csv. At least one identifier (rsid or chrom+start) is required.
+
+    Inherits from `AuthoredModel`: `extra="forbid"` + the reserved-namespace guard, and the shared
+    field validators for `rsid`/`trait_efo_id`/`direction`/`clin_sig`/`stat_significance`/`effect_size`.
+    """
 
     rsid: Optional[str] = Field(default=None, description="dbSNP identifier, e.g. rs1801133")
     chrom: Optional[str] = Field(default=None, description="Chromosome without 'chr' prefix")
@@ -167,7 +170,7 @@ class VariantRow(BaseModel):
     curator: Optional[str] = Field(default=None, description="Curator override")
     method: Optional[str] = Field(default=None, description="Annotation method override")
 
-    # ── 0.3 additive columns (all optional; see docs/ROADMAP.md "Planned for 0.3") ──
+    # ── 0.3 additive columns (all optional; shipped in 0.3 — see docs/CHANGELOG.md) ──
     direction: Optional[str] = Field(
         default=None,
         description="Effect direction: one of protective|risk|neutral|unknown. Orthogonal to `state`.",
@@ -295,11 +298,6 @@ class VariantRow(BaseModel):
         contract-drift flow (which flags drifted-but-fixable modules for a new PATCH)."""
         return self.upgraded() != self
 
-    @field_validator("rsid")
-    @classmethod
-    def _validate_rsid(cls, v: Optional[str]) -> Optional[str]:
-        return validate_rsid(v)
-
     @field_validator("state")
     @classmethod
     def _validate_state(cls, v: str) -> str:
@@ -359,21 +357,6 @@ class VariantRow(BaseModel):
             f"alleles (A/G), or two pipe-separated phased alleles (A|G), got: {v!r}"
         )
 
-    @field_validator("direction")
-    @classmethod
-    def _validate_direction(cls, v: Optional[str]) -> Optional[str]:
-        return check_vocab(v, VALID_DIRECTIONS, "direction")
-
-    @field_validator("stat_significance")
-    @classmethod
-    def _validate_stat_significance(cls, v: Optional[str]) -> Optional[str]:
-        return check_vocab(v, VALID_SIGNIFICANCE, "stat_significance")
-
-    @field_validator("clin_sig")
-    @classmethod
-    def _validate_clin_sig(cls, v: Optional[str]) -> Optional[str]:
-        return check_vocab(v, VALID_CLIN_SIG, "clin_sig")
-
     @field_validator("actionability")
     @classmethod
     def _validate_actionability(cls, v: Optional[str]) -> Optional[str]:
@@ -388,11 +371,6 @@ class VariantRow(BaseModel):
     @classmethod
     def _validate_weight(cls, v: Optional[float]) -> Optional[float]:
         return validate_finite(v, "weight")
-
-    @field_validator("effect_size")
-    @classmethod
-    def _validate_effect_size(cls, v: Optional[float]) -> Optional[float]:
-        return validate_finite(v, "effect_size")
 
     @field_validator("flags", mode="before")
     @classmethod
@@ -414,11 +392,6 @@ class VariantRow(BaseModel):
             if not isinstance(tag, str) or not tag.strip():
                 raise ValueError(f"flags entries must be non-empty strings, got: {v!r}")
         return v
-
-    @field_validator("trait_efo_id")
-    @classmethod
-    def _validate_trait_efo_id(cls, v: Optional[str]) -> Optional[str]:
-        return validate_trait_ids(v)
 
     @model_validator(mode="after")
     def _validate_identification(self) -> "VariantRow":
@@ -443,8 +416,11 @@ class VariantRow(BaseModel):
         return self
 
 
-class StudyRow(BaseModel):
-    """One row of studies.csv: an (rsid, pmid) evidence link. Grounding evidence is mandatory."""
+class StudyRow(AuthoredModel):
+    """One row of studies.csv: an (rsid, pmid) evidence link. Grounding evidence is mandatory.
+
+    Inherits `AuthoredModel` (reserved-namespace guard + shared `rsid`/`trait_efo_id`/
+    `stat_significance`/`effect_size` validators)."""
 
     rsid: Optional[str] = Field(default=None, description="dbSNP identifier or variant key")
     chrom: Optional[str] = Field(default=None, description="Chromosome (for position-only variants)")
@@ -458,7 +434,7 @@ class StudyRow(BaseModel):
     conclusion: Optional[str] = Field(default=None, description="Study-specific conclusion")
     study_design: Optional[str] = Field(default=None, description="e.g. meta-analysis, GWAS")
 
-    # ── 0.3 additive columns (per-study evidence; see docs/ROADMAP.md "Planned for 0.3") ──
+    # ── 0.3 additive columns (per-study evidence; shipped in 0.3 — see docs/CHANGELOG.md) ──
     stat_significance: Optional[str] = Field(
         default=None,
         description="Per-study statistical significance: significant|suggestive|not_significant|unknown.",
@@ -473,7 +449,7 @@ class StudyRow(BaseModel):
         default=None, description="EFO/MONDO/OBA/HP trait ontology id(s) for this study."
     )
 
-    # ── 0.5 additive provenance columns (RM11/RM12; docs/USE_CASES.md §4a) ──
+    # ── 0.4 provenance columns (RM11/RM12, from the 0.5 scope; docs/USE_CASES.md §4a) ──
     # All optional → P3/P8 clean. They anchor a network-first validator (RM13) without the format
     # ever fetching: the module ships the pointer, the consumer supplies the source and does the check.
     doi: Optional[str] = Field(
@@ -504,26 +480,6 @@ class StudyRow(BaseModel):
         if self.rsid is not None:
             return self.rsid
         return f"{self.chrom}:{self.start}:{self.ref}"
-
-    @field_validator("stat_significance")
-    @classmethod
-    def _validate_stat_significance(cls, v: Optional[str]) -> Optional[str]:
-        return check_vocab(v, VALID_SIGNIFICANCE, "stat_significance")
-
-    @field_validator("effect_size")
-    @classmethod
-    def _validate_effect_size(cls, v: Optional[float]) -> Optional[float]:
-        return validate_finite(v, "effect_size")
-
-    @field_validator("trait_efo_id")
-    @classmethod
-    def _validate_trait_efo_id(cls, v: Optional[str]) -> Optional[str]:
-        return validate_trait_ids(v)
-
-    @field_validator("rsid")
-    @classmethod
-    def _validate_rsid(cls, v: Optional[str]) -> Optional[str]:
-        return validate_rsid(v)
 
     @field_validator("pmid")
     @classmethod

@@ -51,26 +51,53 @@ TRAIT_ID_PATTERN: re.Pattern[str] = re.compile(r"^[A-Za-z][A-Za-z]*[:_]\w+$")
 MULTI_SEP: re.Pattern[str] = re.compile(r"[,;|]")
 
 # ── Reserved namespace (0.4) ──────────────────────────────────────────────────────────────────
-# Names reserved against the one-way door but deliberately NOT built this run (see docs/PROPOSAL_0_4
-# §T2/A4/B6 + round-2). The 0.4 tables set `model_config = ConfigDict(extra="forbid")`, so a column
-# bearing one of these is rejected until a future release claims it. `reference_sequence`,
-# `suballele`, `tissue`, `assay_context`, and `source_field` are BUILT this run, so they are absent
-# here.
+# Names reserved because they are **genuine anticipated module-side axes** (CONSTITUTION Principle 5:
+# reserve future axes so they survive the one-way door), deliberately NOT built this run. This list is
+# ONLY for names that will plausibly become real module columns — it is NOT a catalogue of things that
+# "may not appear" (that space is unbounded and meaningless to enumerate: barring `caller` would be as
+# arbitrary as barring `pasta_recipe`; `extra="forbid"` already rejects every unknown/misspelled column
+# generically). So a name earns a slot here only if a future release is expected to claim it.
+#
+# Enforcement is two-layered: every authored model sets `extra="forbid"` (rejects any unknown column)
+# AND runs the `reject_reserved` before-validator, so a reserved name fails with a *specific* diagnosis
+# — what it is reserved for and that a release may claim it — rather than the generic "extra inputs not
+# permitted" a random/typo'd column gets. That specific message (not a published dictionary) is the
+# list's build-time value; it is honest precisely because these names really are future axes.
+#
+# `reference_sequence`, `suballele`, `tissue`, `assay_context`, and `source_field` are BUILT this run,
+# so they are absent here.
 RESERVED_NAMES_0_4: frozenset[str] = frozenset(
     {
-        # The provenance triple stays reserved: it describes which tool made a *call* (a consumer's
-        # computed measurement), not annotation — so by the data-agnostic north star it is
-        # consumer-side, never a module column (round-2 Q2).
-        "caller",
-        "caller_version",
+        # A module-side hint naming WHICH reference database the app should join this annotation
+        # against when several exist (implicit Ensembl for variants / ClinVar for clin_sig today; a
+        # module may pin it explicitly, e.g. a specific PharmVar release). Annotation-side addressing,
+        # not a measurement — a real future axis.
         "reference_db",
-        "callable_from",  # round-2 3d/0.5 — VCF-derived three-state callability signal (DP,GQ,FT)
+        # The callability signal a consumer establishes a negative from (DP/GQ/FT); reserved for RM6 as
+        # the typed successor to the built `requires_callable` flag (round-2 §3d).
+        "callable_from",
     }
 )
 # NOTE: `requires_callable`, `acmg_sf`, `actionability` were reserved here and are now BUILT as
-# optional `VariantRow` columns (they are general per-variant annotation refinements). PharmGKB
-# `drug`/`response`/`evidence_level` are built on `PharmVariantRow`/`DiplotypeRow`. So none of those
-# are reserved any longer.
+# optional `VariantRow` columns. PharmGKB `drug`/`response`/`evidence_level` are built on
+# `PharmVariantRow`/`DiplotypeRow`. And `caller`/`caller_version` were dropped from the reserved set
+# entirely (round-2 Q2 origin): they name which tool produced a *call* — a consumer-side measurement,
+# never module annotation — so there is no future module axis to reserve, and barring them by name
+# would be arbitrary (a non-feature among unbounded non-features). A consumer records them on its own
+# call data; a module never carries them, and `extra="forbid"` rejects them like any other stray column.
+
+# Why each reserved name is withheld — surfaced verbatim in the author-time error so the author gets a
+# *diagnosis* ("here is what the name is reserved for; a release may claim it"), not a bare rejection.
+RESERVED_NAME_REASONS: dict[str, str] = {
+    "reference_db": (
+        "names which reference database the app should join this annotation against — reserved so a "
+        "module can pin its join target explicitly instead of relying on the implicit default"
+    ),
+    "callable_from": (
+        "the callability signal a consumer establishes negatives from (DP/GQ/FT) — reserved for RM6 as "
+        "the typed successor to requires_callable"
+    ),
+}
 
 # PharmGKB clinical-annotation evidence levels (item 9). Closed vocabulary (Principle 6).
 VALID_EVIDENCE_LEVELS: frozenset[str] = frozenset({"1A", "1B", "2A", "2B", "3", "4"})
@@ -98,6 +125,31 @@ RECOMMENDED_AUTHOR_KINDS: frozenset[str] = frozenset(
 ACTIONABILITY_SEED: frozenset[str] = frozenset(
     {"actionable", "preventable", "pharmacogenomic", "incurable", "reproductive", "descriptive", "modifiable"}
 )
+
+
+def reject_reserved(data: object) -> object:
+    """A `mode="before"` guard for every authored model, layered *on top of* `extra="forbid"`.
+
+    `extra="forbid"` already rejects any unknown column, but treats a reserved name and a random/typo'd
+    one identically (the generic "extra inputs are not permitted"). This guard runs first and, when the
+    raw input carries a reserved-namespace column (`RESERVED_NAMES_0_4`), raises a *specific* error
+    stating what the name is reserved for and that a future release may claim it — so `caller` fails
+    differently from `xyzzy`. That is the reserved list's build-time (author/compile-time) value:
+    reserved ≠ arbitrary at the point of failure, not merely in a published dictionary. A misspelled or
+    genuinely-unknown column still falls through to `extra="forbid"`'s generic message (a hint to check
+    the field list). Non-mapping input passes through untouched (pydantic handles it)."""
+    if isinstance(data, dict):
+        hits = sorted(k for k in data if k in RESERVED_NAMES_0_4)
+        if hits:
+            reasons = "; ".join(
+                f"{h!r} {RESERVED_NAME_REASONS.get(h, 'an anticipated future axis')}" for h in hits
+            )
+            raise ValueError(
+                f"reserved column name(s), not authorable fields: {reasons}. Reserved against the "
+                f"one-way door (CONSTITUTION P3/P5) — a future release may claim them; do not author "
+                f"them into a module. (Reserved now: {sorted(RESERVED_NAMES_0_4)}.)"
+            )
+    return data
 
 
 def check_vocab(value: Optional[str], vocab: frozenset[str], field_name: str) -> Optional[str]:

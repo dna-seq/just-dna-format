@@ -21,18 +21,10 @@ multiplies by *total* CN gets it wrong.
 import re
 from typing import Optional
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import Field, field_validator, model_validator
 
-from just_dna_format.vocab import (
-    VALID_CLIN_SIG,
-    VALID_DIRECTIONS,
-    VALID_EVIDENCE_LEVELS,
-    check_vocab,
-    validate_allele,
-    validate_finite,
-    validate_rsid,
-    validate_trait_ids,
-)
+from just_dna_format.base import AuthoredModel
+from just_dna_format.vocab import check_vocab, validate_allele, validate_finite
 
 # Star-allele string, stored verbatim as the canonical identity. Permissive by design (the string
 # is truth): a leading `*` then digits/letters and the sub-allele/duplication/tandem punctuation
@@ -51,11 +43,11 @@ VALID_FUNCTION_STATUS: frozenset[str] = frozenset(
 )
 
 
-class HaplotypeRow(BaseModel):
+class HaplotypeRow(AuthoredModel):
     """Junction row: one defining variant of a named haplotype/allele. Many rows per haplotype;
-    a variant recurs across many haplotypes (CYP2D6 rs1065852 is core-defining in 22 alleles)."""
+    a variant recurs across many haplotypes (CYP2D6 rs1065852 is core-defining in 22 alleles).
 
-    model_config = ConfigDict(extra="forbid")
+    Inherits `AuthoredModel` (reserved-namespace guard + shared `rsid` validator)."""
 
     haplotype_name: str = Field(description="Named haplotype/allele, e.g. *4 or e4")
     rsid: Optional[str] = Field(default=None, description="dbSNP id of the defining variant")
@@ -64,11 +56,6 @@ class HaplotypeRow(BaseModel):
     ref: Optional[str] = Field(default=None, description="Reference allele (position-only)")
     allele: str = Field(description="The defining (variant) allele on this haplotype, nucleotides")
     gene: Optional[str] = Field(default=None, description="Gene symbol, e.g. CYP2D6")
-
-    @field_validator("rsid")
-    @classmethod
-    def _validate_rsid(cls, v: Optional[str]) -> Optional[str]:
-        return validate_rsid(v)
 
     @field_validator("allele")
     @classmethod
@@ -84,13 +71,13 @@ class HaplotypeRow(BaseModel):
         return self
 
 
-class AlleleFunctionRow(BaseModel):
+class AlleleFunctionRow(AuthoredModel):
     """Allele-unit → activity value + function category. The star-string `allele` is the required
     canonical key. `suballele` is optional-extra (Aldy's `Minor`, e.g. 1.001); the core star is the
     identity. `copy_number`/`sv_type`/`hybrid_orientation` are optional parsed conveniences of the
-    *cis* allele-unit — the star-string remains truth."""
+    *cis* allele-unit — the star-string remains truth.
 
-    model_config = ConfigDict(extra="forbid")
+    Inherits `AuthoredModel` (reserved-namespace guard)."""
 
     gene: str = Field(description="Gene symbol, e.g. CYP2D6")
     allele: str = Field(description="Star-allele string, verbatim canonical identity, e.g. *4")
@@ -131,12 +118,13 @@ class AlleleFunctionRow(BaseModel):
         return check_vocab(v, VALID_FUNCTION_STATUS, "function_status")
 
 
-class DiplotypeRow(BaseModel):
+class DiplotypeRow(AuthoredModel):
     """Canonical fallback: a diplotype (haplotype pair) → phenotype. The pair is canonicalized
     (`haplotype_a <= haplotype_b`) so a lookup is order-independent; multiple rows per pair are
-    allowed (a pleiotropic diplotype affecting several traits)."""
+    allowed (a pleiotropic diplotype affecting several traits).
 
-    model_config = ConfigDict(extra="forbid")
+    Inherits `AuthoredModel` (reserved-namespace guard + shared `direction`/`clin_sig`/
+    `evidence_level`/`trait_efo_id` validators)."""
 
     gene: str = Field(description="Gene symbol, e.g. CYP2D6")
     haplotype_a: str = Field(description="First haplotype of the pair (canonicalized a <= b)")
@@ -157,26 +145,6 @@ class DiplotypeRow(BaseModel):
         default=None, description="PharmGKB clinical-annotation evidence level (1A..4)"
     )
 
-    @field_validator("direction")
-    @classmethod
-    def _validate_direction(cls, v: Optional[str]) -> Optional[str]:
-        return check_vocab(v, VALID_DIRECTIONS, "direction")
-
-    @field_validator("clin_sig")
-    @classmethod
-    def _validate_clin_sig(cls, v: Optional[str]) -> Optional[str]:
-        return check_vocab(v, VALID_CLIN_SIG, "clin_sig")
-
-    @field_validator("evidence_level")
-    @classmethod
-    def _validate_evidence_level(cls, v: Optional[str]) -> Optional[str]:
-        return check_vocab(v, VALID_EVIDENCE_LEVELS, "evidence_level")
-
-    @field_validator("trait_efo_id")
-    @classmethod
-    def _validate_trait_efo_id(cls, v: Optional[str]) -> Optional[str]:
-        return validate_trait_ids(v)
-
     @model_validator(mode="after")
     def _canonicalize_pair(self) -> "DiplotypeRow":
         # Order-independent key: store the lexicographically smaller haplotype first, so a lookup
@@ -186,7 +154,7 @@ class DiplotypeRow(BaseModel):
         return self
 
 
-class PharmVariantRow(BaseModel):
+class PharmVariantRow(AuthoredModel):
     """Single-variant PharmGKB drug-response annotation (item 9) — `pharm_variants.csv`.
 
     A **distinct rowtype** rather than columns on `VariantRow`, so the SNP core stays free of the
@@ -194,9 +162,10 @@ class PharmVariantRow(BaseModel):
     = one concern; no empty `variants.csv`). Diplotype-keyed drug response instead rides on
     `DiplotypeRow`'s optional drug columns. A row maps a variant → a **drug** → a **response** +
     a PharmGKB **evidence level** (1A…4) — a different axis from a risk weight (why it is not a
-    `VariantRow`)."""
+    `VariantRow`).
 
-    model_config = ConfigDict(extra="forbid")
+    Inherits `AuthoredModel` (reserved-namespace guard + shared `rsid`/`evidence_level`/
+    `trait_efo_id` validators)."""
 
     rsid: Optional[str] = Field(default=None, description="dbSNP id of the variant, e.g. rs9923231")
     chrom: Optional[str] = Field(default=None, description="Chromosome (position-only variants)")
@@ -221,21 +190,6 @@ class PharmVariantRow(BaseModel):
         if self.rsid is not None:
             return self.rsid
         return f"{self.chrom}:{self.start}:{self.ref}"
-
-    @field_validator("rsid")
-    @classmethod
-    def _validate_rsid(cls, v: Optional[str]) -> Optional[str]:
-        return validate_rsid(v)
-
-    @field_validator("evidence_level")
-    @classmethod
-    def _validate_evidence_level(cls, v: Optional[str]) -> Optional[str]:
-        return check_vocab(v, VALID_EVIDENCE_LEVELS, "evidence_level")
-
-    @field_validator("trait_efo_id")
-    @classmethod
-    def _validate_trait_efo_id(cls, v: Optional[str]) -> Optional[str]:
-        return validate_trait_ids(v)
 
     @model_validator(mode="after")
     def _validate_identification(self) -> "PharmVariantRow":

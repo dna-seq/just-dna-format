@@ -38,15 +38,10 @@ import re
 from collections import defaultdict
 from typing import ClassVar, Optional, Sequence
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import Field, field_validator, model_validator
 
-from just_dna_format.vocab import (
-    VALID_CLIN_SIG,
-    VALID_DIRECTIONS,
-    check_vocab,
-    validate_finite,
-    validate_trait_ids,
-)
+from just_dna_format.base import AuthoredModel
+from just_dna_format.vocab import check_vocab, validate_finite
 
 # Open, additive vocabulary of measured quantities (the `frozenset[str]` idiom, Principle 6). New
 # quantities are added in a future release; unknown values are rejected (closed-validated).
@@ -65,16 +60,13 @@ _INTEGER_KINDS: frozenset[str] = frozenset({"repeat_count", "copy_number"})
 _CONTINUOUS_GAP_KINDS: frozenset[str] = frozenset({"allele_fraction", "prs_percentile"})
 
 
-class MeasureBinRow(BaseModel):
+class MeasureBinRow(AuthoredModel):
     """Base row of a binning table: a measured quantity range → the same orthogonal axes a
     `VariantRow` carries. Subclasses add the explicit key columns for their quantity.
 
-    `extra="forbid"` is the reserved-namespace boundary — a column named for a not-yet-built
-    reserved field (`caller`, `requires_callable`, `actionability`, …) is rejected until a release
-    claims it.
+    Inherits `AuthoredModel` (and passes it to its subclasses): `extra="forbid"` + the
+    reserved-namespace guard, and the shared `direction`/`clin_sig`/`trait_efo_id` validators.
     """
-
-    model_config = ConfigDict(extra="forbid")
 
     # Subclasses pin their measure_kind via this ClassVar (see `_validate_measure_kind`).
     _EXPECTED_KIND: ClassVar[Optional[str]] = None
@@ -136,21 +128,6 @@ class MeasureBinRow(BaseModel):
         if expected is not None and v != expected:
             raise ValueError(f"{cls.__name__} requires measure_kind={expected!r}, got: {v!r}")
         return v
-
-    @field_validator("direction")
-    @classmethod
-    def _validate_direction(cls, v: Optional[str]) -> Optional[str]:
-        return check_vocab(v, VALID_DIRECTIONS, "direction")
-
-    @field_validator("clin_sig")
-    @classmethod
-    def _validate_clin_sig(cls, v: Optional[str]) -> Optional[str]:
-        return check_vocab(v, VALID_CLIN_SIG, "clin_sig")
-
-    @field_validator("trait_efo_id")
-    @classmethod
-    def _validate_trait_efo_id(cls, v: Optional[str]) -> Optional[str]:
-        return validate_trait_ids(v)
 
     @model_validator(mode="after")
     def _validate_range(self) -> "MeasureBinRow":

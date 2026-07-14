@@ -16,7 +16,7 @@ form of those.
 
 ## Coverage table
 
-| 0.3 feature | Validated | Materialized (→ parquet) | Computed / derived | Status |
+| 0.3 / 0.4 feature | Validated | Materialized (→ parquet) | Computed / derived | Status |
 |---|---|---|---|---|
 | `direction` (`VariantRow`) | ✅ full vocab | ✅ `weights.parquet` | ✅ `effective_direction` / `upgraded()` from `state`(+`weight`) | complete |
 | `stat_significance` (`VariantRow`, `StudyRow`) | ✅ full vocab | ✅ | ✅ derived from `state` (not inferred from `p_value`) | complete |
@@ -73,8 +73,8 @@ form of those.
 
 `state` and the ClinVar booleans **stay required/authoritative** for 0.2 backward-compat
 (CONSTITUTION Principle 8 — a required field is never demoted to optional inside a major). The new
-axes are optional, and `just_dna_format.derive` supplies their fallbacks (per the ROADMAP "Upgrade
-derivation" table):
+axes are optional, and `just_dna_format.derive` supplies their fallbacks (the `effective_*` aliases /
+`upgraded()` derivations listed in the coverage table above):
 
 - **Read-time (non-mutating):** `VariantRow.effective_direction` / `effective_stat_significance` /
   `effective_clin_sig` / `effective_pathogenic` / `effective_benign` return the set column, or the

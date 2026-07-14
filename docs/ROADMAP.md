@@ -20,8 +20,8 @@ already-shipped features — follow them to CHANGELOG.md / COMPILER.md.
 ## 0.5 scope — deferred roadmap items (`RMn`)
 
 Derived in [USE_CASES.md](USE_CASES.md) ("Roadmap items surfaced") by running each real/desired use
-case against the shipped 0.4 bricks. RM1/RM2/RM3/RM8/RM9/RM11/RM12/RM14 **shipped in 0.4**; the items
-still open:
+case against the shipped 0.4 bricks. RM1/RM2/RM3/RM8/RM9/RM11/RM12/RM14 **shipped in 0.4** (their
+rows below are kept for traceability, marked ✅); the rest are 0.5-and-beyond scope:
 
 | # | Item | Owner | Motivating use case | Effort |
 |---|---|---|---|---|
@@ -75,19 +75,33 @@ New ideas enter here as freeform suggestions, then graduate through the design c
 ## Reserved namespace
 
 Because backward-compat makes column names and vocabularies **permanent within a major** (CONSTITUTION
-Principle 5), these names are reserved against the one-way door and **must not** be claimed early or
-smuggled in as `flags`. Audit every new name against this list before adding it.
+Principle 5), a name expected to become a real **module column** later is reserved against the one-way
+door and **must not** be claimed early or smuggled in as `flags`. This list is *only* for genuine
+anticipated module-side axes — it is **not** a catalogue of names that "may not appear" (that space is
+unbounded and pointless to enumerate; barring `caller` would be as arbitrary as barring `pasta_recipe`).
+Audit every new name against this list before adding it.
 
-**Enforced now** (rejected via `model_config = ConfigDict(extra="forbid")` on the 0.4 tables; the live
-set is `just_dna_format.vocab.RESERVED_NAMES_0_4`):
-- **`caller` / `caller_version` / `reference_db`** — the provenance triple describes which tool made a
-  *call* (a consumer's computed measurement), not annotation → consumer-side by the data-agnostic north
-  star; reserved as **three** columns (consumers filter each independently — round-2 Q2), never one
-  composite string.
-- **`callable_from`** — the VCF-derived three-state callability signal (DP, GQ, FT); reserved for
-  RM6/round-2 §3d.
+**Enforced now** (the live set is `just_dna_format.vocab.RESERVED_NAMES_0_4`). Every authored model
+inherits `AuthoredModel`, which sets `extra="forbid"` (rejects *any* unknown column) **and** runs the
+`reject_reserved` before-validator, so a reserved name fails with a *specific* diagnosis — what it is
+reserved for + that a release may claim it (`vocab.RESERVED_NAME_REASONS`) — while a random/misspelled
+column gets the generic "extra inputs not permitted":
+- **`reference_db`** — a module-side hint naming *which* reference database the app should join this
+  annotation against when several exist (implicit Ensembl for variants / ClinVar for `clin_sig` today;
+  a module may pin it, e.g. a specific PharmVar release). Annotation-side addressing, a real future axis.
+- **`callable_from`** — the callability signal a consumer establishes a negative from (DP, GQ, FT);
+  reserved for RM6/round-2 §3d as the typed successor to the built `requires_callable` flag.
 
-**Planned future annotation axes** (not yet built; reserve the names so they survive the one-way door):
+*(`caller` / `caller_version` were reserved through the 0.4 draft as a "provenance triple" (round-2 Q2)
+but are **dropped**: they name which tool produced a *call* — a consumer-side measurement, never module
+annotation — so there is no future module axis to hold, and barring the bare name is arbitrary. A
+consumer records them on its own call data; a module never carries them, and `extra="forbid"` rejects
+them like any stray column. `reference_db` stayed because it has a real annotation-side meaning above,
+not the caller-provenance one it was first reserved under.)*
+
+**Planned future annotation axes** (documented intentions, **not yet in the enforced set** above — they
+are rejected generically by `extra="forbid"` today, and get a slot + a specific diagnosis only when a
+release actually commits to building them):
 - **`consequence`** — VEP molecular consequence (Sequence-Ontology term, e.g. `missense_variant`).
   Distinct from `direction` (phenotypic) and `clin_sig` (clinical). **Never repurpose the bare word
   `effect`** for it.

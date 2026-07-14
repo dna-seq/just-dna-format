@@ -26,9 +26,10 @@ how to caveat them; no sample, genotype, or computed score lives here.
 import re
 from typing import Optional
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import Field, field_validator
 
-from just_dna_format.vocab import MULTI_SEP, check_vocab, validate_finite, validate_trait_ids
+from just_dna_format.base import AuthoredModel
+from just_dna_format.vocab import MULTI_SEP, check_vocab, validate_finite
 
 PGS_ID_PATTERN: re.Pattern[str] = re.compile(r"^PGS\d+$")
 # 1000G superpopulation codes + `multi` for multi-ancestry scores (closed-validated, additive).
@@ -37,10 +38,9 @@ VALID_TRAINING_ANCESTRY: frozenset[str] = frozenset({"EUR", "EAS", "AFR", "AMR",
 VALID_RESEARCH_TIERS: frozenset[str] = frozenset({"research_only", "calibrated"})
 
 
-class PgsRow(BaseModel):
-    """One curated PGS Catalog entry. `extra="forbid"` keeps the reserved namespace closed."""
-
-    model_config = ConfigDict(extra="forbid")
+class PgsRow(AuthoredModel):
+    """One curated PGS Catalog entry. Inherits `AuthoredModel` (reserved-namespace guard, which keeps
+    the namespace closed, + the shared `trait_efo_id` validator)."""
 
     pgs_id: str = Field(description="PGS Catalog id, e.g. PGS000135")
     trait_efo_id: Optional[str] = Field(
@@ -73,11 +73,6 @@ class PgsRow(BaseModel):
         if not PGS_ID_PATTERN.match(v):
             raise ValueError(f"pgs_id must match PGS<digits>, e.g. PGS000135, got: {v!r}")
         return v
-
-    @field_validator("trait_efo_id")
-    @classmethod
-    def _validate_trait_efo_id(cls, v: Optional[str]) -> Optional[str]:
-        return validate_trait_ids(v)
 
     @field_validator("training_ancestry", mode="before")
     @classmethod

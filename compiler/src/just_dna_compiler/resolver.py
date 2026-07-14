@@ -181,7 +181,10 @@ def _lookup_rsids_by_position(
     where = " OR ".join(conditions)
     rows = con.execute(
         f"SELECT DISTINCT chrom, start, ref, id FROM ensembl_variations "
-        f"WHERE ({where}) AND id LIKE 'rs%'",
+        f"WHERE ({where}) AND id LIKE 'rs%' "
+        # ORDER BY makes the pick deterministic when a position is multi-allelic: two runs against the
+        # same DB resolve a ref-less position to the same id, so `resolve_with_ensembl` stays idempotent.
+        f"ORDER BY chrom, start, ref, id",
         params,
     ).fetchall()
     # A ref-less input position (ref=None) matched on (chrom, start) only, so the caller's lookup key
@@ -189,9 +192,21 @@ def _lookup_rsids_by_position(
     # positions under the ref-less key too, so a position-only-without-ref variant resolves.
     refless = {(str(c), s) for c, s, r in positions if r is None}
     result: dict[str, str] = {}
+    refless_warned: set[tuple[str, int]] = set()
     for chrom, start, ref, row_id in rows:
         full = f"{chrom}:{start}:{ref}"
         result.setdefault(full, str(row_id))
-        if (str(chrom), start) in refless:
-            result.setdefault(f"{chrom}:{start}:None", str(row_id))
+        pos = (str(chrom), start)
+        if pos in refless:
+            refless_key = f"{chrom}:{start}:None"
+            if refless_key not in result:
+                result[refless_key] = str(row_id)
+            elif result[refless_key] != str(row_id) and pos not in refless_warned:
+                # A multi-allelic site: the ref-less key already resolved to a different id. The
+                # ORDER BY fixes which one wins, but the choice is genuinely ambiguous — surface it.
+                refless_warned.add(pos)
+                warnings.append(
+                    f"{chrom}:{start} (ref unspecified) matches multiple dbSNP ids; resolved to "
+                    f"{result[refless_key]} deterministically — specify ref to disambiguate."
+                )
     return result
