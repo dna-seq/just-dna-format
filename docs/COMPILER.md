@@ -25,6 +25,10 @@ form of those.
 | `effect_allele` (`VariantRow`) | ✅ nucleotides | ✅ | ⛔ no strand/ref reconciliation (see below) | validate + passthrough |
 | `flags` (`VariantRow`) | ✅ open; split; reserved set | ✅ `List[str]` | ✅ unknown-tag INFO (`ValidationResult.info`) | complete |
 | `trait_efo_id` (`VariantRow`, `StudyRow`) | ✅ CURIE(s) | ✅ | — | complete |
+| `doi` (`StudyRow`, RM11) | ✅ DOI grammar (`10.…/…`, bare or doi.org URL), kept verbatim | ✅ `studies.parquet` | — | complete |
+| `provenance_quote` (`StudyRow`, RM12) | ✅ optional free-text passage | ✅ `studies.parquet` | — | complete (locator, checked consumer-side) |
+| `provenance_regex` (`StudyRow`, RM12) | ✅ author-time `re.compile` sanity (ReDoS-safety is consumer-side) | ✅ `studies.parquet` | — | complete (P1 pattern grammar; matched consumer-side) |
+| `authorship` (`ModuleSpecConfig`/`ModuleManifest`, RM14) | ✅ `Contribution`: role closed-vocab, kind open multi-valued, `extra=forbid` | ✅ **manifest.json** (out of `artifact.digest`) | — | complete (metadata; like `panel`, not reversed from parquets) |
 | `clin_sig` (`VariantRow`) | ✅ full vocab | ✅ | ✅ ↔ `pathogenic`/`benign` aliases (`effective_*` / `upgraded()`) | complete |
 | genotype widening: hemizygous single allele | ✅ | ✅ (1-element list) | — | complete |
 | genotype widening: phased `A\|G` | ✅ (order kept, not sorted) | ✅ `phased` bit + ordered list → **lossless round-trip** | ✅ | complete |

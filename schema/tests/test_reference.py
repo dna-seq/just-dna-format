@@ -40,6 +40,12 @@ def test_authoring_reference_is_generated_not_hardcoded() -> None:
     }
     # retired names are no longer reserved (they became VariantRow columns)
     assert not ({"requires_callable", "acmg_sf", "actionability"} & set(ref["reserved_names"]))
+    # RM14 authorship: the Contribution model + role vocab + open kind seed all surface (generated)
+    assert {"who", "role", "kind", "at"} == {f["name"] for f in ref["models"]["Contribution"]}
+    assert ref["vocabularies"]["author_role"] == ["audited", "created", "edited", "reviewed"]
+    assert {"human", "human_expert", "human_certified", "ai", "swarm"} <= set(
+        ref["open_recommended"]["author_kind"]
+    )
 
 
 def test_authoring_reference_field_records_carry_type_required_description() -> None:

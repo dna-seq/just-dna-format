@@ -29,6 +29,7 @@ from just_dna_format.manifest import (
     RECOMMENDED_ICONS,
     SCHEMA_VERSION,
     VALID_ICON_SETS,
+    Contribution,
     Display,
     GenePanelSpec,
 )
@@ -58,7 +59,13 @@ from just_dna_format.spec import (
     StudyRow,
     VariantRow,
 )
-from just_dna_format.vocab import ACTIONABILITY_SEED, RESERVED_NAMES_0_4, VALID_EVIDENCE_LEVELS
+from just_dna_format.vocab import (
+    ACTIONABILITY_SEED,
+    RECOMMENDED_AUTHOR_KINDS,
+    RESERVED_NAMES_0_4,
+    VALID_AUTHOR_ROLES,
+    VALID_EVIDENCE_LEVELS,
+)
 
 # The authored surface, grouped by role. Order is the reading order for an author/agent.
 _MODULE_MODELS: dict[str, type[BaseModel]] = {
@@ -67,6 +74,7 @@ _MODULE_MODELS: dict[str, type[BaseModel]] = {
     "Defaults": Defaults,
     "GenePanelSpec": GenePanelSpec,
     "Display": Display,
+    "Contribution": Contribution,
 }
 _VARIANT_MODELS: dict[str, type[BaseModel]] = {
     "VariantRow": VariantRow,
@@ -142,10 +150,12 @@ def authoring_reference() -> dict[str, Any]:
             "research_tier": sorted(VALID_RESEARCH_TIERS),
             "reserved_flags": sorted(RESERVED_FLAGS),
             "icon_set": sorted(VALID_ICON_SETS),
+            "author_role": sorted(VALID_AUTHOR_ROLES),
         },
         "open_recommended": {
             "effect_measure": sorted(RECOMMENDED_EFFECT_MEASURES),
             "actionability_seed": sorted(ACTIONABILITY_SEED),
+            "author_kind": sorted(RECOMMENDED_AUTHOR_KINDS),
         },
         "reserved_names": sorted(RESERVED_NAMES_0_4),
         "recommended_palette": {"colors": RECOMMENDED_COLORS, "icons": RECOMMENDED_ICONS},

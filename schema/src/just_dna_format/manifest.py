@@ -14,12 +14,17 @@ import re
 from pathlib import Path
 from typing import Optional
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from just_dna_format.identity import (
     is_valid_version,
     validate_name,
     validate_namespace,
+)
+from just_dna_format.vocab import (
+    RECOMMENDED_AUTHOR_KINDS,
+    VALID_AUTHOR_ROLES,
+    check_vocab,
 )
 
 MANIFEST_VERSION: str = "1.0"
@@ -238,6 +243,69 @@ class Provenance(BaseModel):
     sha256: Optional[str] = Field(default=None, description="sha256: of the provenance document")
 
 
+class Contribution(BaseModel):
+    """One authorship contribution to *this version* of a module (RM14; docs/USE_CASES.md §5a).
+
+    Three orthogonal axes (Principle 5), unbundling the flat `authors`/free-form `curator`:
+    `who` (identity), `role` (what they did — closed vocab), and `kind` (a multi-valued tag set
+    describing the contributor: a human ladder of assurance `human` → `human_expert` →
+    `human_certified`, or `ai` with a scale tag `agent`/`team`/`swarm` — open, so new tags may be
+    coined). A joint contribution is two entries (a human and an ai), each with its own `kind`, so
+    the mix is always spelled out and there is no lossy `hybrid` tag.
+
+    Module metadata: carried in the manifest, **out of `artifact.digest`** (like `provenance`/`logs`),
+    so two versions with identical annotation content but different authorship share a content
+    identity. A consumer (the network validator, a review queue, a human auditor) routes its scrutiny
+    by `kind` — the format carries the kind, the consumer picks the profile (the data-agnostic north
+    star). `extra="forbid"` keeps the record's namespace closed."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    who: str = Field(description="Contributor identity: a name, handle, or model id")
+    role: str = Field(description="What this contributor did (created|edited|audited|reviewed)")
+    kind: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Multi-valued tag set describing the contributor — human ladder {human, human_expert, "
+            "human_certified} or {ai} + scale {agent, team, swarm}. Open (recommended seed); route "
+            "scrutiny by it."
+        ),
+    )
+    at: Optional[str] = Field(default=None, description="ISO-8601 date/timestamp of the contribution")
+
+    @field_validator("who")
+    @classmethod
+    def _check_who(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("who must not be empty")
+        return v
+
+    @field_validator("role")
+    @classmethod
+    def _check_role(cls, v: str) -> str:
+        # A closed vocabulary (Principle 6); reuse the shared checker's message format.
+        return check_vocab(v, VALID_AUTHOR_ROLES, "role") or v
+
+    @field_validator("kind")
+    @classmethod
+    def _check_kind(cls, v: list[str]) -> list[str]:
+        # OPEN tag set: normalise to non-empty lowercase tokens, de-duplicated in order. Unknown tags
+        # (outside RECOMMENDED_AUTHOR_KINDS) are kept, not rejected — new AI topologies may be coined.
+        cleaned: list[str] = []
+        for tag in v:
+            tok = tag.strip().lower()
+            if not tok:
+                raise ValueError("kind tags must be non-empty")
+            if tok not in cleaned:
+                cleaned.append(tok)
+        if not cleaned:
+            raise ValueError(
+                f"kind must list at least one tag (recommended: {sorted(RECOMMENDED_AUTHOR_KINDS)})"
+            )
+        return cleaned
+
+
 class Signature(BaseModel):
     """Optional detached signature over `artifact.digest` (SPEC §5 'future'). Defends against a
     compromised storage backend: a client that pins the marketplace's public key can prove the
@@ -265,6 +333,15 @@ class ModuleManifest(BaseModel):
 
     owner: Optional[str] = None
     authors: list[str] = Field(default_factory=list)
+    authorship: list[Contribution] = Field(
+        default_factory=list,
+        description=(
+            "Structured per-version authorship (RM14): who created/edited/audited this version, and "
+            "whether each is AI or a human expert — so a consumer routes scrutiny by author-kind. "
+            "Optional, out of `artifact.digest`. Supersedes the flat `authors`/`curator` (kept for "
+            "compat; folding them in is a 1.0-cleanup item)."
+        ),
+    )
     created_at: Optional[str] = None
     published_at: Optional[str] = None
 

@@ -22,7 +22,7 @@ from just_dna_format.spec import (
 )
 from pydantic import ValidationError
 
-from just_dna_compiler.compiler import compile_module, validate_spec
+from just_dna_compiler.compiler import compile_module, reverse_module, validate_spec
 
 _YAML = """\
 schema_version: "1.0"
@@ -265,3 +265,49 @@ def test_study_row_vocab_validation() -> None:
         StudyRow.model_validate({"rsid": "rs1", "pmid": "123", "stat_significance": "maybe"})
     with pytest.raises(ValidationError):
         StudyRow.model_validate({"rsid": "rs1", "pmid": "123", "trait_efo_id": "not a curie!"})
+
+
+# ── RM11/RM12: doi + provenance-locator columns (docs/USE_CASES.md §4a) ─────────
+
+# A study row carrying every 0.5 provenance column: a bare DOI, a keyword phrase, and a regex.
+_STUDIES_PROVENANCE = """\
+rsid,pmid,conclusion,doi,provenance_quote,provenance_regex
+rs1801133,12345,assoc,10.1038/s41586-020-2832-5,"reduced enzyme activity","(?i)MTHFR\\s+C677T"
+rs429358,67890,assoc,https://doi.org/10.1000/xyz123,,
+"""
+
+
+def test_study_provenance_columns_materialize_and_roundtrip(tmp_path: Path) -> None:
+    spec = _write_spec(tmp_path / "spec", studies=_STUDIES_PROVENANCE)
+    out = tmp_path / "out"
+    assert compile_module(spec, out, resolve_with_ensembl=False).success
+
+    studies = pl.read_parquet(out / "studies.parquet")
+    for col in ("doi", "provenance_quote", "provenance_regex"):
+        assert col in studies.columns
+    row = studies.filter(pl.col("rsid") == "rs1801133").row(0, named=True)
+    assert row["doi"] == "10.1038/s41586-020-2832-5"
+    assert row["provenance_quote"] == "reduced enzyme activity"
+    assert row["provenance_regex"] == r"(?i)MTHFR\s+C677T"
+    # An absent locator stays null, not an empty string.
+    assert studies.filter(pl.col("rsid") == "rs429358").row(0, named=True)["provenance_quote"] is None
+
+    # Lossless + idempotent: reverse → recompile leaves the studies parquet byte-identical (P7).
+    reverse_module(out, tmp_path / "reversed")
+    assert validate_spec(tmp_path / "reversed").valid
+    compile_module(tmp_path / "reversed", tmp_path / "recompiled", resolve_with_ensembl=False)
+    assert studies.equals(pl.read_parquet(tmp_path / "recompiled" / "studies.parquet"))
+
+
+def test_study_doi_and_regex_validation() -> None:
+    # DOI: a bare token and a doi.org URL both pass; a non-DOI string is rejected.
+    assert StudyRow.model_validate({"pmid": "1", "rsid": "rs1", "doi": "10.1038/nature12373"}).doi
+    assert StudyRow.model_validate(
+        {"pmid": "1", "rsid": "rs1", "doi": "https://doi.org/10.1000/abc"}
+    ).doi
+    with pytest.raises(ValidationError):
+        StudyRow.model_validate({"pmid": "1", "rsid": "rs1", "doi": "not-a-doi"})
+    # provenance_regex: a valid pattern passes; a malformed one is caught at author time.
+    assert StudyRow.model_validate({"pmid": "1", "rsid": "rs1", "provenance_regex": r"C\d+T"})
+    with pytest.raises(ValidationError):
+        StudyRow.model_validate({"pmid": "1", "rsid": "rs1", "provenance_regex": "(unclosed"})

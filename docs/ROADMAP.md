@@ -20,7 +20,8 @@ already-shipped features — follow them to CHANGELOG.md / COMPILER.md.
 ## 0.5 scope — deferred roadmap items (`RMn`)
 
 Derived in [USE_CASES.md](USE_CASES.md) ("Roadmap items surfaced") by running each real/desired use
-case against the shipped 0.4 bricks. RM1/RM2/RM3/RM8/RM9 **shipped in 0.4**; the items still open:
+case against the shipped 0.4 bricks. RM1/RM2/RM3/RM8/RM9/RM11/RM12/RM14 **shipped in 0.4**; the items
+still open:
 
 | # | Item | Owner | Motivating use case | Effort |
 |---|---|---|---|---|
@@ -28,7 +29,11 @@ case against the shipped 0.4 bricks. RM1/RM2/RM3/RM8/RM9 **shipped in 0.4**; the
 | RM5 | **Symbolic / structural alleles** — a representation beyond `^[ACGT]+$`: `<S>`/`<L>`, `<DEL>`/`<INS>`/`<DUP>`, `<STR n>`, and large indels. **Motivating case: 5-HTTLPR** (a biallelic ~43 bp structural indel → Short/Long, *not* a repeat count; rejected by today's nucleotide grammar and a category error in `repeat_alleles.csv`). Also unblocks SV-scale variation and consuming symbolic VCF alleles (round-2 §1b/3c). | format (schema) | 5-HTTLPR, SNP+SV modules, symbolic-VCF consume | medium |
 | RM6 | **Callability as first-class state** — promote `requires_callable` from an optional flag to a queryable typed column, and build the reserved **`callable_from`** (the DP,GQ,FT three-state signal from round-2 §3d). The consumer's own oracle enum (`CONFIRMED_NEGATIVE`/`LOW_DP_NEG`/`UNCOVERED`) is why "a named negative is assertable only where proof is `CONFIRMED_NEGATIVE`" — consumers *will* filter on it. | format (schema) | callability / no-call ≠ hom-ref | low-medium |
 | RM10 | **Declarative inheritance-expectation field** — an optional trio / de-novo / Mendelian-consistency assertion carried *as data* (the panel says what it expects; a consumer checks it). Only if a real module needs it. | format (schema) | trio / multi-sample panels | low (on demand) |
+| RM14 | ✅ **shipped in 0.4** — **Structured per-version authorship**: an optional `authorship: [Contribution]` on `module_spec.yaml`/`ModuleManifest`, unbundling the flat `authors` + free-form `curator` (which smuggled kind via the `"ai-module-creator"` default) into three orthogonal axes (P5): **identity** (`who`), **role** (closed vocab created/edited/audited/reviewed), **kind** (open, multi-valued: human ladder `human`→`human_expert`→`human_certified`, or `ai`+scale `agent`/`team`/`swarm`; no `hybrid` — a joint contribution is two entries). Motivating case: **AI and human error-spectra overlap but differ**, so a consumer (the RM13 validator, a marketplace review queue, a human auditor) routes scrutiny by author-kind — the format carries the kind, the consumer picks the profile (north star). **Digest-neutral** (manifest metadata, out of `artifact.digest`); like `panel`, not reconstructed by the lossy `reverse_module`. Folding the flat `authors`/`curator` in is a 1.0-cleanup candidate. | format (schema) | authorship-aware scrutiny (§5a) | done |
 | RM7 | **Evaluation-output / report-card schema** for the verification harness — **NOT a format task.** Per-sample results are a *measurement*, so by the data-agnostic north star this is a **consumer** contract (`just-dna-lite`), listed here only so it is not mistaken for format scope. | consumer (`just-dna-lite`) | verification harness (§1a) | — |
+| RM11 | ✅ **shipped in 0.4** — **`doi` provenance column** on `StudyRow`, wider than `pmid` (covers preprints/books/theses/datasets with no PubMed id); validated against the DOI grammar, kept verbatim, materialized into `studies.parquet`. A network-first validator (RM13) cross-fills `doi`↔`pmid`. Additive/optional → P3/P8 clean. The full DOI-only fix (relaxing the mandatory `pmid`) is a 1.0 item — see the 1.0 tracker. | format (schema) | validator source-checks (§4a) | done |
+| RM12 | ✅ **shipped in 0.4** — **Provenance locator**: optional `provenance_quote` (keyword phrase) + `provenance_regex` on `StudyRow`, pointing at the passage in the cited article's fulltext so a validator can answer *"does the fulltext contain this claim?"* yes/no. The regex is a **declarative pattern grammar** (Principle 1 — data, not code; `re.compile`-checked at author time, matched by a consumer-side ReDoS-safe engine); the provenance analogue of `source_field`. | format (schema) | validator fulltext check (§4a) | done |
+| RM13 | **`just-module-validator`** — a network-first source-check/enrichment library (validate `pmid` in PubMed, `rsid`/coords in dbSNP, cross-fill ids, confirm fulltext provenance). **NOT a format task.** Principle 2 (no network) keeps all fetching in a **consumer** sibling to `just-dna-lite`; listed here only so it is not mistaken for format scope, and as the motivating consumer for RM11/RM12. | consumer (new sibling) | deterministic module scrutiny (§4a) | — |
 
 **Round-3 / on-demand (widen additively only if a real module hits it):**
 - **STR microvariant notation** — forensic loci use `full.partial` allele names (TH01 `"9.3"` = 9 full
@@ -89,6 +94,10 @@ set is `just_dna_format.vocab.RESERVED_NAMES_0_4`):
 - **`impact`** — VEP impact `{HIGH, MODERATE, LOW, MODIFIER}`, derived from `consequence`.
 - **`allele_frequency`** (+ **`af_population`**) — gnomAD-style MAF context.
 
+*(`doi`, `provenance_quote`, and `provenance_regex` were reserved here for RM11/RM12 and are now **built**
+as optional `StudyRow` columns in 0.4 — so they are absent from this list. The **doi-first** flip that
+relaxes the mandatory `pmid` remains a 1.0 item; see the 1.0-cleanup tracker.)*
+
 *(The ploidy / non-SNV quantities that were reserved through 0.3 — `allele_fraction` / heteroplasmy,
 `repeat_count` + `repeat_unit`, copy-number dosage — are **built** as the 0.4 binning primitive; the
 `hemizygous` genotype case ships via the widened single-allele genotype. Symbolic/structural alleles
@@ -115,3 +124,5 @@ release).
 | `weights.parquet` `likely_pathogenic` / `likely_benign` | Always `False`; no CSV column feeds them — dead output. | Remove at 1.0, or wire to the `clin_sig` tier. |
 | `VariantRow.weight` vs `effect_size` | Potential confusion — module-local score vs published magnitude (both kept, documented). | Review at 1.0 whether `weight` stays or is subsumed by `effect_size`. |
 | Deprecated flag/vocab aliases | Any transitional vocab kept for 0.x compat (e.g. the trimmed-vs-full `state` set). | Collapse to the canonical vocab at 1.0. |
+| `ModuleManifest.authors: list[str]` + free-form `curator` | Flat and overloaded — no role (created/edited/audited), no kind (AI/human); `Defaults.curator` smuggles kind via its `"ai-module-creator"` default. Superseded by the structured authorship record (RM14) once it ships. | Keep both as derived projections through 0.x (P8); at 1.0 fold `authors` into the structured record and drop the kind-smuggling `curator` default. |
+| `StudyRow.pmid` required + PMID-shaped | Mandatory `pmid` (must parse to a real PubMed id) rejects DOI-only provenance — preprints (bioRxiv/medRxiv), books, theses, datasets. Demoting a required field is P8-forbidden in-major, so adding optional `doi` (RM11) alone can't unblock it. | **doi-first at 1.0**: make `pmid` optional/legacy and require **≥1 of `{doi, pmid}`** (every citation has a stable id, not necessarily a PMID; the reverse holds). Requiredness change → major-only. |

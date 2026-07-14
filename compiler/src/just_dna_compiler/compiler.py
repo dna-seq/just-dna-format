@@ -777,6 +777,7 @@ def _build_manifest(
         logs=logs,
         provenance=provenance,
         panel=config.panel,
+        authorship=config.authorship,
         logo=logo,
     )
 
@@ -934,6 +935,10 @@ def _build_studies(studies: list[StudyRow], module_name: str) -> pl.DataFrame:
                 "effect_size": s.effect_size,
                 "effect_measure": s.effect_measure,
                 "trait_efo_id": s.trait_efo_id,
+                # ── 0.5 additive provenance columns (RM11/RM12; docs/USE_CASES.md §4a). ──
+                "doi": s.doi,
+                "provenance_quote": s.provenance_quote,
+                "provenance_regex": s.provenance_regex,
             }
         )
     schema = {
@@ -951,6 +956,9 @@ def _build_studies(studies: list[StudyRow], module_name: str) -> pl.DataFrame:
         "effect_size": pl.Float64,
         "effect_measure": pl.Utf8,
         "trait_efo_id": pl.Utf8,
+        "doi": pl.Utf8,
+        "provenance_quote": pl.Utf8,
+        "provenance_regex": pl.Utf8,
     }
     return pl.DataFrame(records, schema=schema)
 
@@ -1163,6 +1171,8 @@ def _write_studies_csv(studies_df: pl.DataFrame, output_path: Path) -> None:
         "study_design",
         # 0.3 additive columns
         "stat_significance", "effect_size", "effect_measure", "trait_efo_id",
+        # 0.5 additive provenance columns (RM11/RM12)
+        "doi", "provenance_quote", "provenance_regex",
     ]
     with open(output_path, "w", encoding="utf-8", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
@@ -1189,5 +1199,8 @@ def _write_studies_csv(studies_df: pl.DataFrame, output_path: Path) -> None:
                     "effect_size": effect_size if effect_size is not None else "",
                     "effect_measure": row.get("effect_measure") or "",
                     "trait_efo_id": row.get("trait_efo_id") or "",
+                    "doi": row.get("doi") or "",
+                    "provenance_quote": row.get("provenance_quote") or "",
+                    "provenance_regex": row.get("provenance_regex") or "",
                 }
             )

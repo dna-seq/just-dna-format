@@ -24,7 +24,7 @@ from just_dna_format.derive import (
     trimmed_state,
 )
 from just_dna_format.identity import validate_name
-from just_dna_format.manifest import SCHEMA_VERSION, Display, GenePanelSpec
+from just_dna_format.manifest import SCHEMA_VERSION, Contribution, Display, GenePanelSpec
 from just_dna_format.vocab import (
     ACTIONABILITY_SEED,
     ALLELE_PATTERN,
@@ -61,6 +61,11 @@ RECOMMENDED_EFFECT_MEASURES: frozenset[str] = frozenset(
 # (`[PMID: 9545397]`), or as a `;`-joined list (`PMID 17478681; PMID: 30278588`). We accept any
 # string that carries at least one PMID token and keep it verbatim (ROADMAP item 6 / Obs #4).
 PMID_PATTERN: re.Pattern[str] = re.compile(r"\b(\d{1,8})\b")
+# A DOI is `10.<registrant>/<suffix>` (Crockford/Handle grammar). Real sources present it bare
+# (`10.1234/abc.def`) or wrapped in a URL (`https://doi.org/10.1234/abc`); we accept any string that
+# carries one DOI token and keep it verbatim, mirroring the PMID contract. Wider than a PMID: it also
+# covers preprints/books/datasets with no PubMed id (docs/USE_CASES.md §4a, RM11).
+DOI_PATTERN: re.Pattern[str] = re.compile(r"10\.\d{4,9}/\S+")
 
 
 def extract_pmids(raw: str) -> list[str]:
@@ -112,6 +117,14 @@ class ModuleSpecConfig(BaseModel):
             "Optional gene-panel declaration (ROADMAP item 7). Descriptive provenance for modules "
             "derived from a gene set + significance predicate; the compiler records it verbatim "
             "but does not materialize variants from it in this version."
+        ),
+    )
+    authorship: list[Contribution] = Field(
+        default_factory=list,
+        description=(
+            "Optional structured per-version authorship (RM14): one entry per contributor with "
+            "who/role/kind (+ optional date). Recorded verbatim into the manifest; out of "
+            "`artifact.digest`. A joint contribution is two entries (a human and an ai)."
         ),
     )
 
@@ -460,6 +473,31 @@ class StudyRow(BaseModel):
         default=None, description="EFO/MONDO/OBA/HP trait ontology id(s) for this study."
     )
 
+    # ── 0.5 additive provenance columns (RM11/RM12; docs/USE_CASES.md §4a) ──
+    # All optional → P3/P8 clean. They anchor a network-first validator (RM13) without the format
+    # ever fetching: the module ships the pointer, the consumer supplies the source and does the check.
+    doi: Optional[str] = Field(
+        default=None,
+        description=(
+            "Digital Object Identifier — wider than `pmid` (covers preprints/books/datasets with no "
+            "PubMed id). Free-form, kept verbatim; a validator may cross-fill doi↔pmid."
+        ),
+    )
+    provenance_quote: Optional[str] = Field(
+        default=None,
+        description=(
+            "Optional keyword phrase / literal passage locating this study's claim in the cited "
+            "article's fulltext. Human-legible; a validator confirms fulltext-contains, yes/no."
+        ),
+    )
+    provenance_regex: Optional[str] = Field(
+        default=None,
+        description=(
+            "Optional regex locating the claim in fulltext — a declarative pattern grammar "
+            "(Principle 1: data, not code), matched consumer-side by a linear-time/ReDoS-safe engine."
+        ),
+    )
+
     @property
     def variant_key(self) -> str:
         """Stable key matching VariantRow.variant_key."""
@@ -499,6 +537,31 @@ class StudyRow(BaseModel):
                 f"form like '[PMID: 9545397]'), got: {v!r}"
             )
         return v  # kept verbatim; use extract_pmids(pmid) to recover digit-only ids
+
+    @field_validator("doi")
+    @classmethod
+    def _validate_doi(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return v
+        if not DOI_PATTERN.search(v):
+            raise ValueError(
+                f"doi must contain a DOI token (10.<registrant>/<suffix>, bare or as a doi.org "
+                f"URL), got: {v!r}"
+            )
+        return v  # kept verbatim
+
+    @field_validator("provenance_regex")
+    @classmethod
+    def _validate_provenance_regex(cls, v: Optional[str]) -> Optional[str]:
+        # Author-time sanity: the pattern must compile. ReDoS-safety is the consumer's concern —
+        # it evaluates the pattern with a linear-time engine (Principle 1), never Python `re`.
+        if v is None:
+            return v
+        try:
+            re.compile(v)
+        except re.error as exc:
+            raise ValueError(f"provenance_regex is not a valid regular expression: {exc}") from exc
+        return v
 
     @model_validator(mode="after")
     def _validate_study_identification(self) -> "StudyRow":

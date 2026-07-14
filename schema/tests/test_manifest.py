@@ -8,6 +8,7 @@ from pydantic import ValidationError
 from just_dna_format.integrity import build_artifact
 from just_dna_format.manifest import (
     Compilation,
+    Contribution,
     Display,
     Identity,
     ModuleManifest,
@@ -78,3 +79,51 @@ def test_identity_enforces_name_namespace_version_rules() -> None:
 def test_display_enforces_hex_color() -> None:
     with pytest.raises(ValidationError):
         Display(title="t", description="d", report_title="r", color="red")
+
+
+# ── RM14: structured per-version authorship (docs/USE_CASES.md §5a) ─────────────
+
+
+def test_contribution_role_is_a_closed_vocab() -> None:
+    assert Contribution(who="x", role="audited", kind=["human_certified"]).role == "audited"
+    with pytest.raises(ValidationError):
+        Contribution(who="x", role="approved", kind=["human"])  # not in the role vocab
+
+
+def test_contribution_kind_is_open_multivalued_and_normalized() -> None:
+    # Tags are lowercased, stripped, de-duplicated in order; unknown tags are KEPT (open set).
+    c = Contribution(who="lab-swarm", role="created", kind=["AI", " swarm ", "ai", "gpt5-scale"])
+    assert c.kind == ["ai", "swarm", "gpt5-scale"]
+    # kind must carry at least one tag, and tags must be non-empty.
+    with pytest.raises(ValidationError):
+        Contribution(who="x", role="created", kind=[])
+    with pytest.raises(ValidationError):
+        Contribution(who="x", role="created", kind=["  "])
+
+
+def test_contribution_forbids_unknown_fields() -> None:
+    with pytest.raises(ValidationError):
+        Contribution(who="x", role="created", kind=["human"], reviwer="typo")  # noqa: unexpected field
+
+
+def test_authorship_survives_manifest_write_read(tmp_path: Path) -> None:
+    manifest = _manifest(tmp_path)
+    # A joint ("hybrid") contribution is TWO entries — a human expert and an ai swarm — same role.
+    manifest.authorship = [
+        Contribution(who="just-dna-agents@1.4", role="created", kind=["ai", "agent"], at="2026-07-12"),
+        Contribution(who="Dr. A. Geneticist", role="audited", kind=["human_certified"]),
+        Contribution(who="claude-opus-4-8", role="audited", kind=["ai", "swarm"]),
+    ]
+    write_manifest(manifest, tmp_path / "manifest.json")
+    reloaded = read_manifest(tmp_path / "manifest.json")
+    assert [c.who for c in reloaded.authorship] == [
+        "just-dna-agents@1.4", "Dr. A. Geneticist", "claude-opus-4-8"
+    ]
+    audited = [c for c in reloaded.authorship if c.role == "audited"]
+    assert {"human_certified"} == set(audited[0].kind)
+    assert audited[1].kind == ["ai", "swarm"]
+
+
+def test_authorship_defaults_to_empty_list(tmp_path: Path) -> None:
+    # Optional and backward-compatible: an older manifest with no authorship still validates.
+    assert _manifest(tmp_path).authorship == []

@@ -74,6 +74,23 @@ RESERVED_NAMES_0_4: frozenset[str] = frozenset(
 
 # PharmGKB clinical-annotation evidence levels (item 9). Closed vocabulary (Principle 6).
 VALID_EVIDENCE_LEVELS: frozenset[str] = frozenset({"1A", "1B", "2A", "2B", "3", "4"})
+
+# ── Module authorship (RM14; docs/USE_CASES.md §5a) ─────────────────────────────
+# A contribution's `role` is a small, stable, CLOSED vocabulary (Principle 6): what a contributor did
+# to *this version*.
+VALID_AUTHOR_ROLES: frozenset[str] = frozenset({"created", "edited", "audited", "reviewed"})
+# A contributor's `kind` is an OPEN, multi-valued tag set — a *recommended seed* keyed for consumer
+# faceting (route scrutiny by author-kind), but authors may coin new tags as AI topologies proliferate,
+# so unknown tags are kept, not rejected (like `flags`). Facets:
+#   • human, a rising ladder of assurance: `human` → `human_expert` → `human_certified`
+#     (a medically / board-certified expert, e.g. a clinical geneticist);
+#   • ai, plus a scale/topology tag: `ai` with `agent` | `team` | `swarm`.
+# There is deliberately **no `hybrid` tag** — it was rejected as non-explicit (hybrid *what* — a human
+# + a small model, or a certified expert + a SOTA swarm?). A joint contribution is expressed by two
+# entries (a human and an ai), each with its own `kind`, so the mix is always spelled out.
+RECOMMENDED_AUTHOR_KINDS: frozenset[str] = frozenset(
+    {"human", "human_expert", "human_certified", "ai", "agent", "team", "swarm"}
+)
 # The reserved `actionability` axis's recommended seed vocabulary (documentation — the field is not
 # built yet, so this is not enforced). Round-2 Q9 extended the round-1 seed with `descriptive` (a
 # large fraction of findings are self-knowledge / no-action — an explicit "none", not forced into

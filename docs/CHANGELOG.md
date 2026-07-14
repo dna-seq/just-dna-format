@@ -12,6 +12,36 @@ A correctness/robustness pass over the 0.4 work, before publish. Packages bumped
 implements). **`schema_version` stays `"1.0"`.** Still unpublished, so the `artifact.digest` changes
 below are free to absorb.
 
+- **Structured per-version authorship (RM14; docs/USE_CASES.md §5a).** A new optional
+  `authorship: list[Contribution]` on `module_spec.yaml` (and `ModuleManifest`), unbundling the flat
+  `authors: list[str]` + free-form `curator` (which smuggled author-kind via the `"ai-module-creator"`
+  default) into three orthogonal axes (P5): `who` (identity), `role` (closed vocab
+  `created`/`edited`/`audited`/`reviewed`), and `kind` — an **open, multi-valued** tag set with a
+  recommended seed: a human ladder of assurance `human` → `human_expert` → `human_certified`
+  (medically/board-certified), or `ai` plus a scale tag `agent`/`team`/`swarm`. There is no `hybrid`
+  tag — a joint contribution is two entries (a human and an ai), so the mix is always explicit. The
+  motivating case: **AI and human error-spectra overlap but differ**, so a consumer (the network
+  validator, a marketplace review queue, a human auditor) routes scrutiny by author-kind — the format
+  carries the kind, the consumer picks the profile (north star). It is **manifest metadata, out of
+  `artifact.digest`** (like `provenance`/`logs`/`panel`), so it is additive/digest-neutral even
+  post-freeze and two versions with identical annotation content but different authorship keep one
+  content identity. `authoring_reference()` surfaces the `Contribution` model + `author_role`
+  vocabulary + `author_kind` seed automatically. Folding the flat `authors`/`curator` in is a
+  1.0-cleanup item.
+- **Provenance columns on `StudyRow` (RM11/RM12; docs/USE_CASES.md §4a).** Three optional columns that
+  let a *network-first* validator (RM13, a consumer — Principle 2 keeps fetching out of these libs)
+  scrutinise a module without the format ever downloading:
+  - **`doi`** — Digital Object Identifier, wider than `pmid` (covers preprints/books/datasets with no
+    PubMed id); validated against the DOI grammar and kept verbatim.
+  - **`provenance_quote`** / **`provenance_regex`** — a keyword phrase and/or regex locating a study's
+    claim in the cited article's fulltext, so a validator can confirm fulltext-contains yes/no. The
+    regex is a Principle-1 *declarative pattern grammar* (data, not code): compiled at author time for
+    a sanity check, matched consumer-side by a linear-time/ReDoS-safe engine. The provenance analogue
+    of `source_field`.
+  All optional → additive/monotonic (P3/P8); materialized into `studies.parquet` with lossless
+  round-trip (P7). The mandatory-`pmid` → doi-first relaxation remains a 1.0-cleanup item (a required
+  field can't be demoted in-major). `authoring_reference()` picks the columns up automatically.
+
 - **Round-trip fidelity fixes (CONSTITUTION Principle 7).** Four shapes silently round-tripped wrong
   — the happy path (rsid-keyed, uniform priority, no explicit-`False` booleans) stayed green, so the
   invariant was only nominally tested:

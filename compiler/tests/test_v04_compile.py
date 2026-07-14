@@ -10,6 +10,7 @@ from pathlib import Path
 import polars as pl
 
 from just_dna_compiler.compiler import compile_module, reverse_module, validate_spec
+from just_dna_format.manifest import read_manifest
 
 _YAML = (
     "schema_version: '1.0'\n"
@@ -304,3 +305,32 @@ def test_duplicate_diplotype_rejected(tmp_path: Path) -> None:
     result = validate_spec(spec)
     assert not result.valid
     assert any("duplicate row" in e for e in result.errors), result.errors
+
+
+def test_module_authorship_carried_into_manifest(tmp_path: Path) -> None:
+    """RM14: an `authorship:` block in module_spec.yaml reaches manifest.json verbatim (§5a)."""
+    spec = tmp_path / "authored"
+    spec.mkdir()
+    (spec / "module_spec.yaml").write_text(
+        _YAML.replace("composed", "authored")
+        + "authorship:\n"
+        "  - who: just-dna-agents@1.4\n"
+        "    role: created\n"
+        "    kind: [ai, swarm]\n"
+        "    at: '2026-07-12'\n"
+        "  - who: Dr. A. Geneticist\n"
+        "    role: audited\n"
+        "    kind: [human_certified]\n",
+        encoding="utf-8",
+    )
+    (spec / "variants.csv").write_text(_VARIANTS, encoding="utf-8")
+    (spec / "studies.csv").write_text(_STUDIES, encoding="utf-8")
+    out = tmp_path / "out"
+    assert compile_module(spec, out, resolve_with_ensembl=False).success
+
+    authorship = read_manifest(out / "manifest.json").authorship
+    assert [(c.who, c.role, tuple(c.kind)) for c in authorship] == [
+        ("just-dna-agents@1.4", "created", ("ai", "swarm")),
+        ("Dr. A. Geneticist", "audited", ("human_certified",)),
+    ]
+    assert authorship[0].at == "2026-07-12"

@@ -174,6 +174,117 @@ harness (§1a) wants — and RM1/RM2 are what unlocked it.
 
 ---
 
+## 4. Network-first validation & enrichment (external-source scrutiny)
+
+### 4a. `just-module-validator` — deterministic source-checks + provenance enrichment against public sources
+
+**Verdict: the validator is CONSUMER-SIDE (Principle 2 keeps it out of these libs); the two additive
+format anchors it needs shipped in 0.4 (RM11/RM12), and one requiredness fix waits for 1.0.**
+
+A proposed sibling library that is **network-first**: given a module it checks the authored claims
+against public sources and enriches them —
+
+- validate every `pmid` resolves in PubMed, and every `rsid` resolves in dbSNP at the authored
+  `chrom:start` (flag coord/liftover drift);
+- cross-fill provenance ids — derive a `doi` from a PMID and vice-versa;
+- confirm a study's claim actually appears in the cited article's fulltext (imagine further
+  source-checks in the same spirit).
+
+By the data-agnostic north star and **Principle 2 (no network; inject-only)**, the *doing* — every
+fetch and lookup — is a consumer's, and can never live in `just-dna-format`/`just-dna-compiler`
+(that would pull the network dependency the tiers forbid, Goal 2). So the validator is a new
+consumer/enricher sibling to `just-dna-lite`, recorded as `→ RM13` so it is not mistaken for format
+scope — exactly as the report-card harness is (§1a / RM7). Crucially, **most of what it checks needs
+nothing from the format**: `rsid`, `chrom`, `start` already exist, so validating them against dbSNP
+is pure consumer work — enabled today. Two things it wants to *anchor* are genuine additive format
+gaps, and one is a 1.0 requiredness fix:
+
+- **`doi` as a provenance id — additive, shipped in 0.4 (RM11).** `StudyRow` previously carried only
+  `pmid` (required, and it must contain ≥1 real PubMed id). DOI is *wider*: it covers preprints
+  (bioRxiv/medRxiv), books, theses, and datasets that have no PMID. The **optional `doi` column** now
+  lets the validator record and cross-fill it, and lets a module cite a DOI-bearing source. Purely
+  additive → P3/P8 clean (new optional field; existing data still validates); validated against the
+  DOI grammar and kept verbatim. `→ RM11`.
+
+- **A provenance *locator* — search-phrase/regex pointing at the passage in fulltext — additive,
+  shipped in 0.4 (RM12).** So the validator can answer *"does the cited article's fulltext actually
+  contain this claim?"* in a yes/no manner, a study row now carries optional **`provenance_quote`**
+  (keyword phrase) and **`provenance_regex`**. The regex sits squarely inside **Principle 1's
+  sanctioned escape hatch**: a *declarative pattern grammar* is **data, not code** — the module ships
+  the pattern, the consumer supplies the fulltext and runs the match, evaluated by a **linear-time /
+  ReDoS-safe engine** (P1's explicit requirement; the compiler only `re.compile`-checks it at author
+  time). It is the provenance analogue of `source_field` (0.4): `source_field` is a declarative
+  pointer to *where the measurement lives in a VCF*; the locator is a declarative pointer to *where
+  the claim lives in the article*. Neither holds the data it points at (north star ✓). Primarily an
+  aid for **LLM-authors** (which can emit a precise pattern), yet a plain keyword phrase is legible
+  enough to clear the human-authorability gate for a human author too. `→ RM12`.
+
+- **`pmid` is mandatory today — the DOI-only case cannot be closed additively (a 1.0 fix).** `pmid:
+  str` is *required and must parse to a real PubMed id* (`extract_pmids`), so a **preprint/book/thesis
+  with only a DOI is unauthorable right now** — and demoting a required field to optional is precisely
+  the move Principle 8 forbids within a major. Adding `doi` (RM11) is necessary but **not sufficient**:
+  while `pmid` stays required-and-PMID-shaped, DOI-only provenance is still rejected. The full fix is
+  **doi-first at 1.0** — make `pmid` optional/legacy and require **at least one of `{doi, pmid}`**
+  ("not every citation has a PMID, but every citation has a stable id" — the reverse of today's rule).
+  That is a requiredness change → **major-only**, parked as a **1.0-cleanup candidate**, not an `RMn`.
+  Until 1.0, DOI-only provenance is an explicitly-parked gap.
+
+---
+
+## 5. Module-level authorship & provenance (author-kind → scrutiny calibration)
+
+### 5a. Structured per-version authorship — who *created* / *edited* / *audited*, and whether each is AI or a human expert
+
+**Verdict: SHIPPED in 0.4 (RM14) — an additive, digest-neutral `authorship` record; the old flat
+fields stay for compat.** This is the module-level companion to the
+network-first validator (§4a): the validator — and a marketplace review queue, and a human auditor —
+needs to **route its scrutiny by who authored the version**, because *AI and human error-spectra
+overlap but differ*. An AI author fabricates plausible-but-wrong PMIDs / rsids / effect-sizes (exactly
+the checks RM11–RM13 automate); a human expert makes transcription / off-by-one / stale-reference
+slips. The format never *performs* the scrutiny (consumer-side, north star) — it must *carry the
+author-kind* so the consumer can select the right profile, the same "annotate so the consumer's X is
+safe and reproducible" contract as everywhere else.
+
+What exists today, and why it does not cover it:
+
+- `ModuleManifest.authors: list[str]` — a **flat** list: no role (created/edited/audited), no kind
+  (AI/human). The overloaded-axis anti-pattern (P5), at the list level.
+- `curator` / `method` — single free-form strings; `Defaults.curator` even **defaults to
+  `"ai-module-creator"`, smuggling author-kind into a string** a consumer cannot reliably facet on.
+  This is precisely the axis-overload Principle 5 exists to unwind.
+- `Provenance` (`generator`/`model`/`agent_version`) + per-variant `ProvenanceItem.human_reviewed` —
+  captures *AI-generation* and *per-variant human review*, but not module-level **role attribution**
+  (who edited vs. audited *this* version), and it names only the AI side.
+
+So the axes were half-present and tangled. The shipped shape is a **structured, per-version
+`authorship` list** (`Contribution` model) unbundling three orthogonal axes (P5): **identity** (`who`),
+**role** (`created | edited | audited | reviewed`, a closed vocab), and **kind** — a *multi-valued,
+open* tag set with a recommended seed: a **human ladder of assurance** `human` → `human_expert` →
+`human_certified` (medically / board-certified, e.g. a clinical geneticist), or `ai` plus a scale tag
+`agent`/`team`/`swarm`. There is deliberately **no `hybrid` tag** — it was rejected as non-explicit
+(hybrid *what*?); a joint contribution is **two entries** (a human and an ai), each with its own
+`kind`, so the mix is always spelled out. Each entry is optionally timestamped (`at`). "Per-version"
+falls out of immutability (P4): a version's manifest records its own authorship, and cross-version
+history is the union via `aggregate_provenance`.
+
+**Why it is cheap.** `artifact.digest` is a Merkle root over the **parquet files only** — manifest
+metadata (`logs`, `provenance`, `logo`, and this) is deliberately *out* of it. So two versions with
+identical annotation content but different authorship keep the **same content identity** (correct: who
+authored ≠ what the annotation is). Adding it is additive/optional (P3/P8), touches no parquet column,
+and is **digest-neutral even after 0.4 freezes**. `curator`/`authors`/`provenance` stay working;
+folding the flat `authors` into the structured record is a 1.0-cleanup candidate. `authoring_reference()`
+picks up the new vocabularies automatically.
+
+**Charter check:** data-agnostic ✓ (module metadata, not sample data); declarative ✓; P5 — this *is*
+the axis-unbundling; P6 — `role`/`kind` are `frozenset` vocabularies; the human-authorability gate is
+met by keeping the whole block optional and collapsing it to a single entry for the common
+one-AI-author case, so a module never reads like an enterprise audit ledger. Like `panel`, it is
+manifest metadata and is *not* reconstructed by the lossy parquet→spec `reverse_module` (which rebuilds
+a content skeleton) — the durable per-version record is the manifest itself, which is correct and no P7
+issue (P7 governs artifact columns). `→ RM14` (**shipped**).
+
+---
+
 ## Roadmap items surfaced
 
 The gaps above, consolidated. Format-side items migrate into [`ROADMAP.md`](ROADMAP.md); the
@@ -191,10 +302,16 @@ consumer-side one is recorded so it is not mistaken for a format task.
 | RM8 | ✅ **shipped in 0.4 sample** — `reference.authoring_reference()` + `json_schemas()`, generated from the live models | format (schema) | 1d drift | done |
 | RM9 | ✅ **shipped in 0.4 sample** — `manifest.RECOMMENDED_COLORS`/`RECOMMENDED_ICONS` | format (schema) | 1d palette | done |
 | RM10 | Optional declarative inheritance-expectation field (trio/de-novo assertion as data) | format (schema) | 1c trio | low (only if needed) |
+| RM11 | ✅ **shipped in 0.4** — **`doi` provenance column** on `StudyRow` (optional; validated against the DOI grammar, kept verbatim) | format (schema) | 4a | done |
+| RM12 | ✅ **shipped in 0.4** — **Provenance locator**: optional `provenance_quote` (keyword phrase) + `provenance_regex` (author-time-compiled, matched by a consumer-side linear-time engine — P1 pattern grammar) on `StudyRow` | format (schema) | 4a | done |
+| RM13 | **`just-module-validator`** — network-first source-check/enrichment library | **consumer** (new sibling), NOT the format | 4a | — (not a format task) |
+| RM14 | ✅ **shipped in 0.4** — **Structured per-version authorship** (`authorship: [Contribution]`): `{who, role, kind, at}`; role closed {created/edited/audited/reviewed}; kind open, seed = human ladder {human, human_expert, human_certified} / {ai}+scale {agent,team,swarm} (no `hybrid` — joint = two entries). Manifest metadata → **digest-neutral**. | format (schema) | 4a validator, marketplace review | done |
 
 **Takeaway.** The two load-bearing items — **RM1 + RM2** (compiler materialization + composed
 modules) — are now **shipped**: the frozen 0.4 shapes are runnable artifacts, and every
 composite/personal module compiles with lossless round-trip. What remains open is small and clearly
-scoped: RM3-adjacent extensions, RM5 (symbolic alleles / 5-HTTLPR), and RM6/RM10 refinements. Notably,
+scoped: RM3-adjacent extensions, RM5 (symbolic alleles / 5-HTTLPR), RM6/RM10 refinements, and the two
+provenance anchors RM11/RM12 (`doi` + fulltext locator) that let a network-first validator scrutinise
+a module without the format ever fetching. Notably,
 the format's *purpose expansion* (the verification harness) still needs **no format change** — it rides
 on the properties already frozen, now with the tables materialized under it.
