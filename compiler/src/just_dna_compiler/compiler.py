@@ -688,6 +688,18 @@ def compile_module(
             variants, ensembl_cache, genome_build=config.genome_build
         )
         all_warnings.extend(resolve_warnings)
+        # Resolution is an enrichment that can *change identity*: filling a coordinate or expanding a
+        # one-to-many rsid into coord-keyed rows may collide with an already-authored row. validate_spec
+        # ran on the pre-resolution set, so re-run the identity checks on the resolved set — a duplicate
+        # (variant_key, genotype) or an inconsistent position must fail the compile, not silently land in
+        # weights.parquet. Only errors are taken (warnings were already surfaced pre-resolution).
+        post_errors, _ = _cross_validate_variants(variants)
+        if post_errors:
+            return CompilationResult(
+                success=False,
+                errors=[f"post-resolution: {e}" for e in post_errors],
+                warnings=all_warnings,
+            )
 
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -1018,7 +1030,9 @@ def _module_name_from_parquets(parquet_dir: Path) -> Optional[str]:
             if "module" in df.columns:
                 values = df["module"].drop_nulls().unique().to_list()
                 if values:
-                    return values[0]
+                    # polars `unique()` order is unstable; sort for a deterministic pick (a
+                    # well-formed module has one value here, so this only matters defensively).
+                    return sorted(values)[0]
     return None
 
 
@@ -1108,13 +1122,18 @@ def reverse_module(
 
 
 def _most_common(df: pl.DataFrame, col: str) -> Optional[str]:
-    """Return the most common non-null value in a column, or None."""
+    """Return the most common non-null value in a column, or None.
+
+    On a tie, polars `mode()` gives no ordering guarantee (its result order is unstable even
+    call-to-call), so the smallest value is picked deterministically — otherwise `reverse_module`'s
+    inferred curator/method default (hence which rows emit a blank vs an explicit value) would vary
+    run-to-run for the same artifact."""
     if col not in df.columns:
         return None
     non_null = df[col].drop_nulls()
     if non_null.len() == 0:
         return None
-    return non_null.mode().to_list()[0]
+    return min(non_null.mode().to_list())
 
 
 def _write_variants_csv(

@@ -137,11 +137,13 @@ def resolve_variants(
     warnings: list[str] = []
     rsid_to_pos: dict[str, list[dict]] = {}
     if need_pos:
-        unique_rsids = list({v.rsid for v in need_pos if v.rsid is not None})
+        # sorted, not set-order: the "not found in Ensembl" warnings are appended in this order, so
+        # an unsorted set iteration would leave manifest.compilation.warnings non-reproducible.
+        unique_rsids = sorted({v.rsid for v in need_pos if v.rsid is not None})
         rsid_to_pos = _lookup_positions_by_rsid(con, unique_rsids, warnings)
     pos_to_rsid: dict[str, str] = {}
     if need_rsid:
-        unique_positions = list(
+        unique_positions = sorted(
             {(v.chrom, v.start, v.ref) for v in need_rsid if v.chrom is not None and v.start is not None}
         )
         pos_to_rsid = _lookup_rsids_by_position(con, unique_positions, warnings)

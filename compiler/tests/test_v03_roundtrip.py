@@ -7,6 +7,7 @@ ROADMAP item 5b). Proves the two invariants the earlier 0.3 ship deferred:
 Plus the widened guardrail: a two-allele genotype warns on MT *and* Y, but not on X (diploid in XX).
 All run with resolve_with_ensembl=False (no reference/network)."""
 
+import csv
 from pathlib import Path
 
 import polars as pl
@@ -65,6 +66,37 @@ def test_roundtrip_is_lossless_including_phase(tmp_path: Path) -> None:
     # Every column of both artifacts survives the reverse→recompile round-trip unchanged.
     assert orig_w.equals(recomp_w)
     assert orig_s.equals(recomp_s)
+
+
+def test_authoring_row_order_is_preserved(tmp_path: Path) -> None:
+    """Row order survives compile → reverse → recompile. This is load-bearing, not cosmetic: parquet
+    bytes depend on row order, so `artifact.digest` is order-sensitive (Principle 7 idempotency).
+    Authored in a deliberately non-alphabetical rsid order to catch any accidental sorting."""
+    variants = (
+        "rsid,genotype,weight,state,conclusion\n"
+        "rs7412,A,0.1,neutral,third\n"
+        "rs1801133,A/G,0.5,protective,first\n"
+        "rs429358,C,-0.3,risk,second\n"
+    )
+    studies = (
+        "rsid,pmid\nrs7412,111\nrs1801133,222\nrs429358,333\n"
+    )
+    expected = ["rs7412", "rs1801133", "rs429358"]
+
+    compile_module(
+        _write_spec(tmp_path / "spec", variants, studies), tmp_path / "orig",
+        resolve_with_ensembl=False,
+    )
+    assert pl.read_parquet(tmp_path / "orig" / "weights.parquet")["rsid"].to_list() == expected
+
+    reverse_module(tmp_path / "orig", tmp_path / "reversed")
+    reversed_rows = list(
+        csv.DictReader((tmp_path / "reversed" / "variants.csv").read_text().splitlines())
+    )
+    assert [r["rsid"] for r in reversed_rows] == expected
+
+    compile_module(tmp_path / "reversed", tmp_path / "recompiled", resolve_with_ensembl=False)
+    assert pl.read_parquet(tmp_path / "recompiled" / "weights.parquet")["rsid"].to_list() == expected
 
 
 def test_phase_bit_distinguishes_phased_from_unphased(tmp_path: Path) -> None:

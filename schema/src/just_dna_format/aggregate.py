@@ -29,15 +29,22 @@ def aggregate_logs(manifests: Iterable[ModuleManifest]) -> list[FileEntry]:
 def aggregate_provenance(manifests: Iterable[ModuleManifest]) -> list[Provenance]:
     """Deduplicated union of the per-version `provenance` summaries across manifests.
 
-    Dedup key is the provenance document hash (`sha256`); summaries without a hash are keyed by
-    their identity so distinct-but-unhashed summaries are not silently merged. First occurrence
-    wins; deterministic ordering.
+    Dedup key is the provenance document hash (`sha256`); a summary without a hash is keyed by a
+    monotonic counter so distinct-but-unhashed summaries are not silently merged. Result is in
+    **first-occurrence order** (the order manifests were passed) — deterministic, and not keyed on
+    `id()` as before (object identity is non-reproducible across processes, so sorting by it gave a
+    run-dependent order).
     """
     seen: dict[str, Provenance] = {}
+    unhashed = 0
     for manifest in manifests:
         prov = manifest.provenance
         if prov is None:
             continue
-        key = prov.sha256 or f"id:{id(prov)}"
+        if prov.sha256:
+            key = prov.sha256
+        else:
+            key = f"unhashed:{unhashed}"
+            unhashed += 1
         seen.setdefault(key, prov)
-    return [seen[key] for key in sorted(seen)]
+    return list(seen.values())

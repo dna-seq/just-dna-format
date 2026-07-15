@@ -189,7 +189,11 @@ class GenePanelSpec(BaseModel):
     materialize it (an app-level adapter enumerates the matching variants into `variants.csv`
     today). Native compile-time materialization is a follow-up gated on a working ClinVar
     reference mixin. Optional and backwards-compatible — absent on ordinary variant modules.
+
+    `extra="forbid"` so a typo in the authored `panel:` block is caught, not silently dropped.
     """
+
+    model_config = ConfigDict(extra="forbid")
 
     source: str = Field(description="Reference the panel resolves against, e.g. 'clinvar'")
     reference: Optional[str] = Field(

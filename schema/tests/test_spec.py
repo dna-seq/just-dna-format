@@ -35,6 +35,19 @@ def test_spec_config_rejects_unknown_schema_version() -> None:
         ModuleSpecConfig(schema_version="9.9", module=module)
 
 
+def test_config_models_reject_unknown_keys() -> None:
+    """The `module_spec.yaml` container models forbid extras, so an authored typo is a hard error
+    rather than a silently dropped key. The `genome_build` case is safety-relevant: a typo'd key
+    would otherwise leave the build at its GRCh38 default (wrong-assembly resolution)."""
+    module = {"name": "m", "title": "T", "description": "d", "report_title": "R"}
+    with pytest.raises(ValidationError):
+        ModuleSpecConfig(module=module, genome_bild="GRCh37")  # top-level typo
+    with pytest.raises(ValidationError):
+        ModuleSpecConfig(module=module, defaults={"currator": "bob"})  # defaults typo
+    with pytest.raises(ValidationError):
+        ModuleInfo(name="m", title="T", description="d", report_title="R", colour="#21ba45")
+
+
 def test_study_requires_pmid_and_identifier() -> None:
     StudyRow(rsid="rs1", pmid="12345")
     with pytest.raises(ValidationError):

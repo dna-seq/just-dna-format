@@ -13,7 +13,7 @@ manifest enforce exactly the same constraints.
 import re
 from typing import Optional
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from just_dna_format.derive import (
     benign_from_clin_sig,
@@ -85,7 +85,13 @@ class ModuleInfo(Display):
     Extends the manifest's `Display` rather than re-declaring those fields, so the display schema
     and its validation (e.g. the hex-colour rule) live in exactly one place. `name` lives here on
     the authoring side; the manifest routes it into `Identity` instead.
+
+    `extra="forbid"` so an authored-block typo (`colour:`, `nam:`) is a hard error, not a silently
+    dropped key — the same author-time guard the row models carry, applied to the `module:` block.
+    (Set here, not on `Display`, so the manifest side that also uses `Display` is untouched.)
     """
+
+    model_config = ConfigDict(extra="forbid")
 
     name: str = Field(description="Machine name: lowercase, underscores, no spaces")
 
@@ -96,7 +102,12 @@ class ModuleInfo(Display):
 
 
 class Defaults(BaseModel):
-    """Default values applied to variant rows when not explicitly set."""
+    """Default values applied to variant rows when not explicitly set.
+
+    `extra="forbid"` so a typo'd default key (`currator:`) is rejected rather than silently ignored
+    (which would leave the real default in force with no diagnosis)."""
+
+    model_config = ConfigDict(extra="forbid")
 
     curator: str = Field(default="ai-module-creator", description="Default curator identifier")
     method: str = Field(default="literature-review", description="Default annotation method")
@@ -104,7 +115,14 @@ class Defaults(BaseModel):
 
 
 class ModuleSpecConfig(BaseModel):
-    """Top-level model for module_spec.yaml."""
+    """Top-level model for module_spec.yaml.
+
+    `extra="forbid"` so a misspelled top-level key is a hard error, not a silent no-op. This is
+    safety-relevant, not merely tidy: a typo'd `genome_bild:` would otherwise leave `genome_build`
+    at its `GRCh38` default, silently resolving a GRCh37-intended module against the wrong assembly
+    — exactly the corruption the resolver's build guard exists to prevent, bypassed by one typo."""
+
+    model_config = ConfigDict(extra="forbid")
 
     schema_version: str = Field(default=SCHEMA_VERSION, description="DSL schema version")
     module: ModuleInfo = Field(description="Module identity and display metadata")

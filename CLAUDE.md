@@ -101,6 +101,15 @@ cycle* in `USE_CASES.md`.
   demoted; anything that changes `artifact.digest` bytes (parquet column set/types) is major-only —
   *except* while a version is still unpublished, where the digest is not yet frozen.
 - **Round-trip must stay lossless and idempotent** (Principle 7) — prove it with tests, don't assume.
+- **Deterministic ordering is load-bearing** (an implicit consequence of Principle 7, not its own
+  charter rule). Parquet bytes depend on **row order**, so `artifact.digest` is order-sensitive:
+  **authored row order is preserved** through compile → reverse → recompile and must stay that way.
+  Never derive emitted rows, CSV/parquet contents, or manifest fields from `set`/`dict` iteration or
+  from polars `mode()`/`unique()` without an explicit stable sort or tie-break (both give *no* order
+  guarantee — `mode()` is unstable even call-to-call). Prefer explicit `ORDER BY` in SQL, `sorted(...)`
+  /`min(...)` for picks, and first-occurrence (insertion) order for dedup. **Column order and cell
+  formatting, by contrast, are normalized, not preserved** (reverse emits a fixed `fieldnames` order;
+  values are stripped/canonicalized) — that asymmetry is intended. New orderings get a test.
 - `uv run pytest` runs the suite. Use `uv sync` / `uv add`; **never** `uv pip install`.
 - New markdown (except this file / `README`) goes in `docs/`.
 
