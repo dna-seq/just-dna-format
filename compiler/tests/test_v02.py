@@ -149,8 +149,10 @@ def test_unsupported_logo_extension_rejected(tmp_path: Path) -> None:
     spec = _write_spec(tmp_path / "s", logo=False)
     gif = spec / "logo.gif"
     gif.write_bytes(b"GIF89a")
-    with pytest.raises(ValueError, match="logo must be one of"):
-        compile_module(spec, tmp_path / "o", resolve_with_ensembl=False, logo_file=gif)
+    # An unsupported logo now surfaces as a compile error, not an uncaught exception.
+    result = compile_module(spec, tmp_path / "o", resolve_with_ensembl=False, logo_file=gif)
+    assert not result.success
+    assert any("logo must be one of" in e for e in result.errors)
 
 
 def test_verify_manifest_checks_optional_files(tmp_path: Path) -> None:

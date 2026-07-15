@@ -285,7 +285,8 @@ class Contribution(BaseModel):
     @classmethod
     def _check_role(cls, v: str) -> str:
         # A closed vocabulary (Principle 6); reuse the shared checker's message format.
-        return check_vocab(v, VALID_AUTHOR_ROLES, "role") or v
+        check_vocab(v, VALID_AUTHOR_ROLES, "role")  # raises if outside the vocab; role is required
+        return v
 
     @field_validator("kind")
     @classmethod
@@ -326,7 +327,13 @@ class ModuleManifest(BaseModel):
     identity: Identity
     display: Display
 
-    genome_build: str = "GRCh38"
+    genome_build: str = Field(
+        default="GRCh38",
+        description=(
+            "Reference genome build. The reference compiler is GRCh38-bound — the digest is "
+            "GRCh38-relative; other builds are recorded but not honored (RM15)."
+        ),
+    )
     curator: Optional[str] = None
     method: Optional[str] = None
     license: Optional[str] = None

@@ -5,6 +5,46 @@ Shared change log for the just-dna module format/compiler ecosystem. Because
 **just-dna-marketplace**, and **just-dna-agents**, cross-repo integration changes are recorded
 here so parallel work in the other repos isn't surprised. Newest first.
 
+## 2026-07-15 — 0.4.0 (unpublished) — frozen variant identity + one-to-many rsid expansion
+
+A follow-up correctness pass on the 0.4 branch, resolving an identity-model flaw the branch review
+surfaced (still unpublished, so the `artifact.digest` move is free). Root cause: `variant_key =
+rsid-else-coord` treated an rsid and a coordinate as interchangeable identities, so the Ensembl
+resolver — an enrichment — *mutated identity* (filling a coord→rsid flipped the derived key; a
+one-to-many rsid had no faithful representation), silently breaking round-trip/idempotency
+(Principle 7) and collapsing `annotations.parquet` dedup.
+
+- **Frozen `variant_key` (minimal B+).** `VariantRow.variant_key` is now a stored column (via
+  `base.derive_variant_key`), stamped once at load — rsid when it uniquely identifies the row, else
+  the coordinate — and never re-derived; a `model_copy` does not re-run the validator, so resolution
+  can fill a coord/rsid or expand a row without ever re-keying it. Materialized into
+  `weights.parquet`; **compiler-managed** — excluded from `authoring_reference()` and never written
+  back by `reverse_module`. `StudyRow`/`PharmVariantRow` keep the derived property (never resolved).
+- **One-to-many rsid → row expansion.** A no-coord rsid that resolves to N>1 loci now expands into N
+  coord-keyed rows (a paralog/SV signal a consumer can count — data-agnostic), instead of a
+  non-deterministic "first-met" pick. `_lookup_positions_by_rsid` gained `ORDER BY id, chrom, start,
+  ref` and returns all loci. Compiler behavior pinned by `compiler_version` (P4), GRCh38-only.
+- **`reverse_module` restores authored shape** by reading the frozen key: an rsid-keyed row emits its
+  rsid; a coord-keyed row (rsid was *resolved*, or position-only/expanded) emits **position-only**,
+  dropping the resolved rsid — so field-only recompute + re-resolution reproduce the same key. No new
+  CSV column; reverse→recompile is a digest fixed point (proven for the position-only→rsid and
+  expansion shapes).
+- **Bidirectional rsid↔coord consistency check** against the **injected** reference (inject-only, no
+  network — Principle 2, same pattern as the resolver): a disagreement is a **warning** (may be a
+  dbSNP merge/build difference), never fatal.
+- **GRCh38-bound reality made explicit.** Resolution is skipped with a warning for a non-GRCh38
+  `genome_build` (positions are not re-resolved cross-build — RM15) rather than corrupting
+  coordinates against the wrong assembly; documented on `genome_build`, in COMPILER.md, and as
+  ROADMAP RM15 + the "additivity has two axes" note.
+- **Audit fixes.** Studies orphan check matches on a shared identifier (rsid *or* coord), not
+  frozen-key equality; the position-consistency check compares only positioned rows (no
+  mixed-authoring false positive); a malformed `provenance.json` / unsupported logo returns
+  `CompilationResult(success=False)` instead of raising mid-compile; stale docs corrected
+  (`COMPILER.md` reserved-namespace row, compiler `__init__` "three-parquet"); dead `or v` tails
+  dropped. **Tests +20** (frozen-key freeze/backfill/reference-exclusion, resolver expansion +
+  determinism + consistency + build-skip, compile→reverse→recompile flip-prevention + expansion
+  idempotency, old-artifact fallback, orphan-on-coord, malformed-provenance).
+
 ## 2026-07-15 — 0.4.0 (unpublished) — branch-review fixes
 
 A second correctness/consistency pass over the 0.4 branch before publish (still unpublished, so all

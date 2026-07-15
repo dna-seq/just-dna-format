@@ -36,6 +36,20 @@ from just_dna_format.vocab import (
 )
 
 
+def derive_variant_key(
+    rsid: Optional[str], chrom: Optional[str], start: Optional[int], ref: Optional[str]
+) -> str:
+    """The natural identity for a variant-ish row: the rsid when present, else `chrom:start:ref`.
+
+    Single source of truth shared by `VariantRow` (which *freezes* the result into a stored column so
+    resolution can never re-key a row), `StudyRow`, and `PharmVariantRow`. See docs/COMPILER.md — the
+    frozen `variant_key` is what keeps a position-only row that later resolves to an rsid from flipping
+    its identity, and lets a one-to-many rsid expand to distinct coord-keyed rows (Principle 7)."""
+    if rsid is not None:
+        return rsid
+    return f"{chrom}:{start}:{ref}"
+
+
 class AuthoredModel(BaseModel):
     """Base for authored-DSL rows: reserved-namespace guard + shared-vocabulary field validators."""
 

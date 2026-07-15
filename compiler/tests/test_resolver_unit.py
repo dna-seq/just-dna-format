@@ -99,3 +99,95 @@ def test_no_cache_skips_with_warning(tmp_path: Path) -> None:
     patched, warnings = resolve_variants([_v(rsid="rs1801133")], tmp_path / "empty")
     assert patched[0].chrom is None
     assert warnings and "skipped" in warnings[0]
+
+
+# ── Identity freeze: resolution fills a member but never re-keys a row (Principle 7) ────────────
+
+
+def test_one_to_one_rsid_keeps_rsid_key(cache: Path) -> None:
+    # rs1801133 → exactly one locus: the coordinate is filled but the frozen variant_key stays the
+    # rsid (the rsid uniquely identifies the row).
+    patched, _ = resolve_variants([_v(rsid="rs1801133")], cache)
+    assert len(patched) == 1
+    assert patched[0].variant_key == "rs1801133"
+    assert (patched[0].chrom, patched[0].start, patched[0].ref) == ("1", 11856377, "G")
+
+
+def test_position_only_row_is_coord_keyed_after_resolution(cache: Path) -> None:
+    # The P7 regression that motivated the work: a position-only row resolves to an rsid, but its
+    # frozen key must STAY the coordinate — it must not flip to the resolved rsid.
+    patched, _ = resolve_variants([_v(chrom="1", start=11856377, ref="G")], cache)
+    assert patched[0].rsid == "rs1801133"       # rsid filled
+    assert patched[0].variant_key == "1:11856377:G"  # key did NOT flip to the rsid
+
+
+@pytest.fixture
+def paralog_cache(tmp_path: Path) -> Path:
+    # One rsid mapping to TWO distinct loci (a paralog/segmental-duplication shape).
+    data = tmp_path / "cache" / "data"
+    data.mkdir(parents=True)
+    pl.DataFrame(
+        {
+            "id": ["rs555", "rs555"],
+            "chrom": ["1", "16"],
+            "start": [1000, 2000],
+            "ref": ["A", "A"],
+            "alt": ["G", "G"],
+        }
+    ).write_parquet(data / "chr.parquet")
+    return tmp_path / "cache"
+
+
+def test_one_to_many_rsid_expands_to_n_rows(paralog_cache: Path) -> None:
+    # A no-coord rsid mapping to N>1 loci expands into N rows (a paralog/SV signal a consumer counts),
+    # each keyed by its own coordinate, plus a warning.
+    patched, warnings = resolve_variants([_v(rsid="rs555")], paralog_cache)
+    assert len(patched) == 2
+    assert {p.variant_key for p in patched} == {"1:1000:A", "16:2000:A"}
+    assert all(p.rsid == "rs555" for p in patched)  # every row keeps the shared rsid as data
+    assert any("maps to 2 loci" in w for w in warnings)
+
+
+def test_expansion_order_is_deterministic(tmp_path: Path) -> None:
+    # Source rows out of order → expansion still comes back sorted (ORDER BY id, chrom, start, ref),
+    # so the compiled artifact is idempotent regardless of DB row order.
+    data = tmp_path / "cache" / "data"
+    data.mkdir(parents=True)
+    pl.DataFrame(
+        {
+            "id": ["rs555", "rs555"],
+            "chrom": ["16", "1"],       # deliberately reversed
+            "start": [2000, 1000],
+            "ref": ["A", "A"],
+            "alt": ["G", "G"],
+        }
+    ).write_parquet(data / "chr.parquet")
+    patched, _ = resolve_variants([_v(rsid="rs555")], tmp_path / "cache")
+    assert [p.variant_key for p in patched] == ["1:1000:A", "16:2000:A"]
+
+
+def test_both_identifiers_consistent_no_warning(cache: Path) -> None:
+    # rsid + coord that agree with the reference → no consistency warning.
+    _, warnings = resolve_variants([_v(rsid="rs1801133", chrom="1", start=11856377, ref="G")], cache)
+    assert not any("disagreement" in w for w in warnings)
+
+
+def test_both_identifiers_contradiction_warns(cache: Path) -> None:
+    # rsid authored at a coordinate the reference maps elsewhere → a (non-fatal) warning.
+    _, warnings = resolve_variants([_v(rsid="rs1801133", chrom="1", start=999, ref="T")], cache)
+    assert any("disagreement" in w and "rs1801133" in w for w in warnings)
+
+
+def test_consistency_skipped_when_reference_silent(cache: Path) -> None:
+    # Neither the rsid nor the coordinate is in the reference → unverifiable → no warning.
+    _, warnings = resolve_variants(
+        [_v(rsid="rs00000001", chrom="7", start=42, ref="C")], cache
+    )
+    assert not any("disagreement" in w for w in warnings)
+
+
+def test_non_grch38_build_skips_resolution(cache: Path) -> None:
+    # The compiler is GRCh38-bound: a GRCh37 module is not resolved against the GRCh38 reference.
+    patched, warnings = resolve_variants([_v(rsid="rs1801133")], cache, genome_build="GRCh37")
+    assert patched[0].chrom is None
+    assert any("GRCh38-bound" in w for w in warnings)

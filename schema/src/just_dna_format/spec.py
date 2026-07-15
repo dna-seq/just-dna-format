@@ -23,7 +23,7 @@ from just_dna_format.derive import (
     stat_significance_from_state,
     trimmed_state,
 )
-from just_dna_format.base import AuthoredModel
+from just_dna_format.base import AuthoredModel, derive_variant_key
 from just_dna_format.identity import validate_name
 from just_dna_format.manifest import SCHEMA_VERSION, Contribution, Display, GenePanelSpec
 from just_dna_format.vocab import (
@@ -109,7 +109,16 @@ class ModuleSpecConfig(BaseModel):
     schema_version: str = Field(default=SCHEMA_VERSION, description="DSL schema version")
     module: ModuleInfo = Field(description="Module identity and display metadata")
     defaults: Defaults = Field(default_factory=Defaults, description="Default variant-row values")
-    genome_build: str = Field(default="GRCh38", description="Reference genome build for positions")
+    genome_build: str = Field(
+        default="GRCh38",
+        description=(
+            "Reference genome build for positions. REALITY: the reference compiler is "
+            "**GRCh38-bound** — it resolves and reasons about coordinates as GRCh38 only, so "
+            "`artifact.digest` is GRCh38-relative. A GRCh37/T2T build is recorded verbatim but not "
+            "honored (positions are not re-resolved per build, and rsid↔coord consistency is not "
+            "checked cross-build). Build-aware identity/resolution is RM15 (other-builds-support)."
+        ),
+    )
     panel: Optional[GenePanelSpec] = Field(
         default=None,
         description=(
@@ -149,6 +158,15 @@ class VariantRow(AuthoredModel):
     )
     ref: Optional[str] = Field(default=None, description="Reference allele")
     alts: Optional[str] = Field(default=None, description="Alt allele(s), comma-separated")
+    variant_key: Optional[str] = Field(
+        default=None,
+        description=(
+            "Frozen machine identity (rsid, else chrom:start:ref), stamped at load and never "
+            "re-derived — so the resolver filling a coord/rsid can't re-key the row, and a one-to-many "
+            "rsid expands to distinct coord-keyed rows (Principle 7). Compiler-managed: not authored, "
+            "materialized to weights.parquet, and never written back by reverse_module."
+        ),
+    )
     genotype: str = Field(description="Slash-separated sorted alleles, e.g. A/G")
     weight: Optional[float] = Field(default=None, description="Score (positive=protective)")
     state: str = Field(description="One of: risk, protective, neutral, significant, alt, ref")
@@ -230,12 +248,13 @@ class VariantRow(AuthoredModel):
         ),
     )
 
-    @property
-    def variant_key(self) -> str:
-        """Stable grouping key: rsid when available, else chrom:start:ref."""
-        if self.rsid is not None:
-            return self.rsid
-        return f"{self.chrom}:{self.start}:{self.ref}"
+    @model_validator(mode="after")
+    def _freeze_variant_key(self) -> "VariantRow":
+        """Stamp the frozen identity at load, ignoring any authored value (no foot-gun). Because a
+        `mode="after"` validator does not re-run on `model_copy`, the resolver can fill rsid/coord or
+        reassign the key on expansion without it re-deriving. See `base.derive_variant_key`."""
+        self.variant_key = derive_variant_key(self.rsid, self.chrom, self.start, self.ref)
+        return self
 
     # ── 0.3 read-time aliases + upgrade (ROADMAP item 1/6 + "Upgrade derivation"). ────────────────
     # `state` and the ClinVar booleans stay REQUIRED/authoritative for 0.2 compat (CONSTITUTION
@@ -476,10 +495,9 @@ class StudyRow(AuthoredModel):
 
     @property
     def variant_key(self) -> str:
-        """Stable key matching VariantRow.variant_key."""
-        if self.rsid is not None:
-            return self.rsid
-        return f"{self.chrom}:{self.start}:{self.ref}"
+        """Stable key matching VariantRow.variant_key. StudyRow is never resolved/expanded, so its
+        key stays a derived property (no freezing needed)."""
+        return derive_variant_key(self.rsid, self.chrom, self.start, self.ref)
 
     @field_validator("pmid")
     @classmethod

@@ -361,8 +361,14 @@ def _cross_validate_variants(variants: list[VariantRow]) -> tuple[list[str], lis
     errors: list[str] = []
     warnings: list[str] = []
 
-    key_positions: dict[str, tuple[Optional[str], Optional[int]]] = {}
+    # Only compare rows that actually carry a position. A key seen once with a position and again
+    # without one (e.g. an rsid authored with coords on the het row but not the hom row, or a row
+    # awaiting resolution) is NOT a conflict — comparing `(None, None)` against a real position was a
+    # false positive. Two *positioned* rows for one key that disagree are still an error.
+    key_positions: dict[str, tuple[str, int]] = {}
     for row in variants:
+        if row.chrom is None or row.start is None:
+            continue
         key = row.variant_key
         pos = (row.chrom, row.start)
         if key in key_positions:
@@ -413,13 +419,29 @@ def _cross_validate_variants(variants: list[VariantRow]) -> tuple[list[str], lis
 
 
 def _cross_validate_studies(
-    studies: list[StudyRow], variant_keys: set[str]
+    studies: list[StudyRow], variants: list[VariantRow]
 ) -> tuple[list[str], list[str]]:
-    """Validate study rows against variant keys. Returns (errors, warnings)."""
+    """Validate study rows against the variants. Returns (errors, warnings).
+
+    A study matches a variant on **any shared identifier** — same rsid or same `chrom:start:ref` —
+    not on frozen-key equality. Keying strictly on `variant_key` would false-orphan a study that
+    references a variant by a different (but co-identifying) handle than the one the variant froze its
+    key to (e.g. a coord-keyed variant referenced by rsid)."""
     warnings: list[str] = []
-    orphan_keys = {row.variant_key for row in studies} - variant_keys
-    if orphan_keys:
-        warnings.append(f"Studies reference variants not in variants.csv: {sorted(orphan_keys)}")
+    variant_rsids = {v.rsid for v in variants if v.rsid is not None}
+    variant_coords = {
+        f"{v.chrom}:{v.start}:{v.ref}" for v in variants if v.chrom is not None
+    }
+    orphans: list[str] = []
+    for row in studies:
+        by_rsid = row.rsid is not None and row.rsid in variant_rsids
+        by_coord = row.chrom is not None and f"{row.chrom}:{row.start}:{row.ref}" in variant_coords
+        if not by_rsid and not by_coord:
+            orphans.append(row.variant_key)
+    if orphans:
+        warnings.append(
+            f"Studies reference variants not in variants.csv: {sorted(set(orphans))}"
+        )
     seen: set[tuple[str, str]] = set()
     for row in studies:
         key = (row.variant_key, row.pmid)
@@ -560,9 +582,8 @@ def validate_spec(spec_dir: Path) -> ValidationResult:
         cross_errors, cross_warnings = _cross_validate_variants(variants)
         all_errors.extend(cross_errors)
         all_warnings.extend(cross_warnings)
-        variant_keys = {v.variant_key for v in variants}
         if studies:
-            _, study_warnings = _cross_validate_studies(studies, variant_keys)
+            _, study_warnings = _cross_validate_studies(studies, variants)
             all_warnings.extend(study_warnings)
         # `flags` is an open vocabulary — surface non-reserved tags as INFO (not a warning; nothing
         # is wrong). ROADMAP 0.3 item 4.
@@ -663,7 +684,9 @@ def compile_module(
     if resolve_with_ensembl and variants:
         from just_dna_compiler.resolver import resolve_variants
 
-        variants, resolve_warnings = resolve_variants(variants, ensembl_cache)
+        variants, resolve_warnings = resolve_variants(
+            variants, ensembl_cache, genome_build=config.genome_build
+        )
         all_warnings.extend(resolve_warnings)
 
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -691,8 +714,18 @@ def compile_module(
         table_rows[parquet_name] = table_df.height
 
     logs = _collect_logs(spec_dir, output_dir, log_files)
-    provenance = _collect_provenance(spec_dir, output_dir, provenance_file)
-    logo = _collect_logo(spec_dir, output_dir, logo_file)
+    # Authored side-car assets are validated here (validate_spec does not read them). Surface a
+    # malformed one as a compile error instead of letting the exception escape mid-compile.
+    try:
+        provenance = _collect_provenance(spec_dir, output_dir, provenance_file)
+    except ValidationError as exc:
+        return CompilationResult(
+            success=False, errors=[f"provenance.json is invalid: {exc}"], warnings=all_warnings
+        )
+    try:
+        logo = _collect_logo(spec_dir, output_dir, logo_file)
+    except ValueError as exc:
+        return CompilationResult(success=False, errors=[str(exc)], warnings=all_warnings)
     manifest = _build_manifest(
         config=config,
         spec_dir=spec_dir,
@@ -797,6 +830,10 @@ def _build_weights(variants: list[VariantRow], config: ModuleSpecConfig) -> pl.D
         records.append(
             {
                 "rsid": v.rsid,
+                # Frozen machine identity (base.derive_variant_key), stamped at load and reassigned
+                # only on resolver expansion. Carried so reverse_module can tell an authored rsid from
+                # a resolved one and restore the authored shape without re-keying (Principle 7).
+                "variant_key": v.variant_key,
                 "genotype": _split_genotype(v.genotype),
                 # Phase bit: `genotype` is stored as an allele *list*, which cannot itself
                 # distinguish a phased A|G from an unphased (sorted) A/G — both split to ["A","G"].
@@ -843,6 +880,7 @@ def _build_weights(variants: list[VariantRow], config: ModuleSpecConfig) -> pl.D
         )
     schema = {
         "rsid": pl.Utf8,
+        "variant_key": pl.Utf8,
         "genotype": pl.List(pl.Utf8),
         "phased": pl.Boolean,
         "module": pl.Utf8,
@@ -1102,10 +1140,19 @@ def _write_variants_csv(
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
         for row in weights_df.iter_rows(named=True):
-            rsid = row.get("rsid") or ""
-            # Reconstruct the variant_key the same way VariantRow.variant_key does, so the annotation
-            # lookup matches for position-only variants (rsid null → chrom:start:ref).
-            variant_key = rsid or f"{row.get('chrom')}:{row.get('start')}:{row.get('ref')}"
+            raw_rsid = row.get("rsid")
+            # The frozen machine key decides the AUTHORED shape (Principle 7): a row keyed on its rsid
+            # had the rsid authored → emit it; a coord-keyed row's rsid was *resolved* (or it was
+            # position-only, or an expanded one-to-many locus) → emit position-only, dropping the
+            # resolved rsid so recompute (`rsid-else-coord`) + re-resolution reproduce the same key.
+            variant_key = row.get("variant_key")
+            if variant_key is None:
+                # Old artifact without the frozen-key column: fall back to the derived key + prior
+                # (non-restoring) behavior, emitting whatever rsid is present.
+                variant_key = raw_rsid or f"{row.get('chrom')}:{row.get('start')}:{row.get('ref')}"
+                emit_rsid = raw_rsid or ""
+            else:
+                emit_rsid = raw_rsid if (raw_rsid is not None and variant_key == raw_rsid) else ""
             ann = ann_lookup.get(variant_key, {})
             genotype_list = row.get("genotype", [])
             alts_list = row.get("alts")
@@ -1130,7 +1177,7 @@ def _write_variants_csv(
             effect_size = row.get("effect_size")
             writer.writerow(
                 {
-                    "rsid": rsid,
+                    "rsid": emit_rsid,
                     "chrom": row.get("chrom", ""),
                     "start": row.get("start", ""),
                     "ref": row.get("ref", ""),

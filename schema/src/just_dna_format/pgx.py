@@ -23,7 +23,7 @@ from typing import Optional
 
 from pydantic import Field, field_validator, model_validator
 
-from just_dna_format.base import AuthoredModel
+from just_dna_format.base import AuthoredModel, derive_variant_key
 from just_dna_format.vocab import check_vocab, validate_allele, validate_finite
 
 # Star-allele string, stored verbatim as the canonical identity. Permissive by design (the string
@@ -60,7 +60,8 @@ class HaplotypeRow(AuthoredModel):
     @field_validator("allele")
     @classmethod
     def _validate_allele(cls, v: str) -> str:
-        return validate_allele(v, "allele") or v
+        validate_allele(v, "allele")  # raises on a non-nucleotide; the value is a required str
+        return v
 
     @model_validator(mode="after")
     def _validate_identification(self) -> "HaplotypeRow":
@@ -186,10 +187,8 @@ class PharmVariantRow(AuthoredModel):
 
     @property
     def variant_key(self) -> str:
-        """Stable key matching VariantRow.variant_key."""
-        if self.rsid is not None:
-            return self.rsid
-        return f"{self.chrom}:{self.start}:{self.ref}"
+        """Stable key matching VariantRow.variant_key (never resolved/expanded, so a property)."""
+        return derive_variant_key(self.rsid, self.chrom, self.start, self.ref)
 
     @model_validator(mode="after")
     def _validate_identification(self) -> "PharmVariantRow":

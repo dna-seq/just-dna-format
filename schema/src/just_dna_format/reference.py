@@ -114,10 +114,20 @@ def _type_name(annotation: Any) -> str:
     )
 
 
+# Compiler-managed machine fields that are materialized into the artifact but are NOT authored — kept
+# out of the human-facing authoring reference so they don't read as fields an author writes. (The full
+# machine `json_schemas()` still lists them: it is the honest, complete materialized shape.)
+_COMPILER_MANAGED_FIELDS: frozenset[str] = frozenset({"variant_key"})
+
+
 def _describe_model(model: type[BaseModel]) -> list[dict[str, Any]]:
-    """Field list for one model, in declaration order — `{name, type, required, description}`."""
+    """Field list for one model, in declaration order — `{name, type, required, description}`.
+
+    Skips `_COMPILER_MANAGED_FIELDS` (e.g. the frozen `variant_key`): materialized, but not authored."""
     fields = []
     for name, field in model.model_fields.items():
+        if name in _COMPILER_MANAGED_FIELDS:
+            continue
         fields.append(
             {
                 "name": name,

@@ -54,6 +54,15 @@ form of those.
    `variants.csv`. Grounding (`studies.csv`) is required iff `variants.csv` is present. **`artifact.digest`
    moved once** off the old `weights`-only value because `weights.parquet` gained the three 0.4
    `VariantRow` axes — expected (0.4 unpublished); determinism + round-trip are the held invariants.
+4. **Single build — GRCh38-bound.** `genome_build` is recorded but the compiler honors **GRCh38
+   only**: the Ensembl resolver is GRCh38, every `chrom/start/ref` is interpreted as GRCh38, and
+   `artifact.digest` is therefore GRCh38-relative. A module labeled GRCh37/T2T compiles, but its
+   positions are not re-resolved for that build and rsid↔coordinate consistency cannot be checked
+   cross-build. This is legacy-from-implementation reality, not a principle — build-aware identity
+   and resolution are RM15 (other-builds-support). Corollary: a no-coord rsid that maps to several
+   loci is **expanded to one row per locus** (a paralog/SV signal a client can count — data-agnostic);
+   this ships GRCh38-now as compiler behavior. Only *which/how-many* loci per build is build-specific,
+   so the multi-build generalization is RM15 — the GRCh38 expansion itself is not deferred.
 
 ## 0.4 compiler coverage (materialized)
 
@@ -66,8 +75,10 @@ form of those.
 | PharmGKB `PharmVariantRow` (`pharm_variants.csv`; single-variant drug response, `evidence_level` 1A…4) | ✅ | ✅ | **materialized** |
 | `VariantRow` general axes: `requires_callable` / `acmg_sf` / `actionability` (optional) | ✅ (`actionability` vs `ACTIONABILITY_SEED`) | ✅ into `weights.parquet` (bespoke; tri-state bool round-trip) | **materialized** |
 | PGS `PgsRow` (declared interface; ancestry-validity fields) | ✅ `PGS<digits>`, ancestry/tier vocab, `match_rate_floor∈[0,1]` | ✅ | **materialized** |
-| reserved namespace (`caller` / `caller_version` / `reference_db` / `callable_from`) | ✅ rejected via `extra=forbid` until built | — | reserved |
+| reserved namespace (`reference_db` / `callable_from`) | ✅ specific diagnosis via `reject_reserved`, on top of `extra=forbid`, until built | — | reserved |
 | authoring reference + palette (`reference.authoring_reference()`/`json_schemas()`, `RECOMMENDED_COLORS`/`RECOMMENDED_ICONS`) | ✅ generated from the live models (drift-proof) | n/a (schema helper) | **shipped** (RM8/RM9) |
+| frozen `variant_key` identity (`base.derive_variant_key`) | ✅ stamped once at load, never re-keyed by resolution (P7); excluded from `authoring_reference()` | ✅ `weights.parquet` (compiler-managed; read by `reverse_module` to restore authored shape, never written back) | **shipped** |
+| rsid↔coord resolution: one-to-many **expansion**, deterministic order, inject-only consistency check | ✅ `ORDER BY`; consistency disagreement → warning; non-GRCh38 build skipped | ✅ N coord-keyed rows per one-to-many rsid; round-trip idempotent | **shipped** (GRCh38-only; multi-build RM15) |
 
 ## Upgrade derivation (`state`/booleans → 0.3 axes)
 
