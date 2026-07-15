@@ -77,6 +77,38 @@ def test_position_only_variant_keeps_annotation(tmp_path: Path) -> None:
     )
 
 
+def test_poly_effect_annotation_survives_roundtrip(tmp_path: Path) -> None:
+    # A genuine poly-effect variant: one locus, two genotype rows with DISTINCT effects
+    # (conclusion) AND distinct phenotype/category. Keying annotations on variant_key alone
+    # collapsed the second row onto the first, silently overwriting its phenotype/category on
+    # reverse. Keyed on the variant-effect pair (variant_key, conclusion, negatives) both survive
+    # (Principle 7 — lossless round-trip).
+    variants = (
+        "rsid,genotype,state,conclusion,gene,phenotype,category\n"
+        "rs1,A/G,risk,mild effect,GENE1,MildTrait,catA\n"
+        "rs1,A/A,risk,severe effect,GENE1,SevereTrait,catB\n"
+    )
+    studies = "rsid,pmid\nrs1,12345678\n"
+    orig, recompiled = _roundtrip(tmp_path, variants, studies)
+
+    def by_conclusion(d: Path) -> dict[str, tuple]:
+        w = pl.read_parquet(d / "weights.parquet")
+        ann = pl.read_parquet(d / "annotations.parquet")
+        # join weights → annotations on the variant-effect pair, as reverse does
+        merged = {
+            (r["variant_key"], r["conclusion"], r["negatives"]): (r["phenotype"], r["category"])
+            for r in ann.iter_rows(named=True)
+        }
+        return {
+            r["conclusion"]: merged[(r["variant_key"], r["conclusion"], r["negatives"])]
+            for r in w.iter_rows(named=True)
+        }
+
+    expected = {"mild effect": ("MildTrait", "catA"), "severe effect": ("SevereTrait", "catB")}
+    assert by_conclusion(orig) == expected
+    assert by_conclusion(recompiled) == expected
+
+
 def test_position_only_study_survives_roundtrip(tmp_path: Path) -> None:
     variants = "chrom,start,ref,genotype,state,conclusion\n1,100,A,A/G,risk,c\n"
     studies = "chrom,start,ref,pmid,population\n1,100,A,12345678,EUR\n"

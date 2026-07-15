@@ -119,10 +119,21 @@ def test_weights_schema_and_dtypes(tmp_path: Path) -> None:
     assert df.schema["alts"] == pl.List(pl.Utf8)
 
 
-def test_annotations_deduplicated_by_rsid(tmp_path: Path) -> None:
+def test_annotations_deduplicated_by_variant_effect_pair(tmp_path: Path) -> None:
+    # annotations dedups on the genuine **variant-effect pair** (variant_key, conclusion, negatives),
+    # NOT on variant_key alone: the two rs4244285 rows carry distinct conclusions (a poly-effect
+    # shape), so both survive instead of one collapsing and losing its annotation (Principle 7).
     compile_module(_write_spec(tmp_path / "spec"), tmp_path / "out", resolve_with_ensembl=False)
     ann = pl.read_parquet(tmp_path / "out" / "annotations.parquet")
-    assert ann.height == ann["rsid"].n_unique()          # two rs4244285 rows collapse to one
+    keys = list(
+        zip(
+            ann["variant_key"].to_list(),
+            ann["conclusion"].to_list(),
+            ann["negatives"].to_list(),
+        )
+    )
+    assert len(keys) == len(set(keys))                   # one row per distinct variant-effect pair
+    assert ann.height == 3                               # two rs4244285 effects + one rs1057910
     assert set(ann["category"].to_list()) == {"cyp2c19", "cyp2c9"}
 
 

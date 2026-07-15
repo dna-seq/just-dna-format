@@ -15,6 +15,7 @@ from typing import Optional
 
 import duckdb
 
+from just_dna_format.base import derive_variant_key
 from just_dna_format.spec import VariantRow
 
 from just_dna_compiler.cache import DUCKDB_NAME, resolve_ensembl_reference
@@ -166,10 +167,12 @@ def resolve_variants(
                     f"(one per locus, each keyed by its coordinate — a consumer can count them)."
                 )
                 for locus in loci:
-                    key = f"{locus['chrom']}:{locus['start']}:{locus['ref']}"
+                    key = derive_variant_key(
+                        None, locus["chrom"], locus["start"], locus["ref"]
+                    )
                     patched.append(v.model_copy(update={**locus, "variant_key": key}))
         elif v.rsid is None and v.chrom is not None:
-            key = f"{v.chrom}:{v.start}:{v.ref}"
+            key = derive_variant_key(None, v.chrom, v.start, v.ref)
             if key in pos_to_rsid:
                 # Fill the rsid; the frozen variant_key stays the coordinate (no flip).
                 patched.append(v.model_copy(update={"rsid": pos_to_rsid[key]}))
@@ -226,14 +229,14 @@ def _check_rsid_coord_consistency(
     network (Constitution Principle 2)."""
     rsid_loci = _lookup_positions_by_rsid(con, list({r.rsid for r in rows}), [])
     rsid_coordkeys: dict[str, set[str]] = {
-        rsid: {f"{lo['chrom']}:{lo['start']}:{lo['ref']}" for lo in loci}
+        rsid: {derive_variant_key(None, lo["chrom"], lo["start"], lo["ref"]) for lo in loci}
         for rsid, loci in rsid_loci.items()
     }
     positions = list({(r.chrom, r.start, r.ref) for r in rows})
     coord_ids = _lookup_rsid_sets_by_position(con, positions)
 
     for r in rows:
-        coordkey = f"{r.chrom}:{r.start}:{r.ref}"
+        coordkey = derive_variant_key(None, r.chrom, r.start, r.ref)
         loci = rsid_coordkeys.get(r.rsid)
         ids = coord_ids.get(coordkey)
         if loci and coordkey not in loci:
@@ -267,7 +270,7 @@ def _lookup_rsid_sets_by_position(
     ).fetchall()
     result: dict[str, set[str]] = defaultdict(set)
     for chrom, start, ref, row_id in rows:
-        result[f"{chrom}:{start}:{ref}"].add(str(row_id))
+        result[derive_variant_key(None, chrom, start, ref)].add(str(row_id))
     return dict(result)
 
 
@@ -304,11 +307,11 @@ def _lookup_rsids_by_position(
     result: dict[str, str] = {}
     refless_warned: set[tuple[str, int]] = set()
     for chrom, start, ref, row_id in rows:
-        full = f"{chrom}:{start}:{ref}"
+        full = derive_variant_key(None, chrom, start, ref)
         result.setdefault(full, str(row_id))
         pos = (str(chrom), start)
         if pos in refless:
-            refless_key = f"{chrom}:{start}:None"
+            refless_key = derive_variant_key(None, chrom, start, None)
             if refless_key not in result:
                 result[refless_key] = str(row_id)
             elif result[refless_key] != str(row_id) and pos not in refless_warned:

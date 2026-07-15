@@ -285,6 +285,76 @@ issue (P7 governs artifact columns). `→ RM14` (**shipped**).
 
 ---
 
+## 6. One variant, many effects — the variant-effect pair as identity
+
+### 6a. Genotype-dependent poly-effect: sickle-cell `rs334` (HBB Glu6Val)
+
+**Verdict: FIXED — was a silent round-trip GAP introduced by the `variant_key` column, closed by
+keying `annotations.parquet` on the variant-effect pair `(variant_key, conclusion, negatives)`.** No
+DSL change: the author still writes ordinary `variants.csv` rows. The fix is entirely in how the
+compiler *dedups and rejoins* annotation.
+
+**The scenario.** `rs334` (HBB, GAG→GTG, β-globin Glu6Val) is the textbook antagonistic-pleiotropy
+locus: the *same* variant produces categorically different phenotypes by genotype. The carrier is
+malaria-resistant; the homozygote has sickle-cell disease. Authored, that is two informative genotype
+rows at one locus:
+
+```csv
+rsid,genotype,state,conclusion,gene,phenotype,category
+rs334,A/A,ref,No HbS allele — no sickle phenotype,HBB,Normal hemoglobin,hematologic
+rs334,A/T,protective,Sickle-cell trait — resistance to severe P. falciparum malaria,HBB,Malaria resistance,infectious-disease
+rs334,T/T,risk,Sickle-cell anemia (HbSS) — chronic hemolysis and vaso-occlusion,HBB,Sickle-cell disease,hematologic
+```
+
+The `A/T` and `T/T` rows share **one** `variant_key` (`rs334`) but carry **different** `conclusion`,
+`phenotype`, **and** `category` — `infectious-disease` (a protective trait) versus `hematologic` (a
+disease). The effects genuinely do not live in one category: `category` does not subsume them.
+
+**Why one-row-per-variant was wrong (the reasoning).** `weights.parquet` is keyed on
+`(variant_key, genotype)`, so each genotype row is faithfully distinct there. But
+`annotations.parquet` — which carries `gene`/`phenotype`/`category` and exists so a consumer can read a
+variant's annotation without scanning every genotype row — was deduplicated on **`variant_key` alone**.
+That silently asserts *"a variant has one annotation."* For a genuine poly-effect variant it is false:
+the second row (`T/T`) collapsed onto the first met (`A/T`), and on `reverse_module` **every** `rs334`
+row was rewritten with the surviving row's `phenotype`/`category`. The homozygote's `Sickle-cell
+disease` / `hematologic` became `Malaria resistance` / `infectious-disease` — a confident, silent
+inversion of clinical meaning, and a Principle-7 (lossless round-trip) violation. This is not exotic:
+the same shape recurs wherever developmental / neural loci are pleiotropic and a single `category` tag
+cannot hold the effect. The bug was *introduced* with `variant_key` — before it, dedup keyed on `rsid`
+and had the same latent flaw, just less visible.
+
+The honest identity of an annotation-bearing row is therefore the **variant-effect pair**, not the
+variant: `variant + effect`, where the effect is `(conclusion, negatives)`. (It has to be `conclusion`,
+not `genotype`: `annotations.parquet` is per-*variant-effect*, and two genotypes that share an effect
+should still share one annotation row — dedup on the effect, not on the trigger.)
+
+**The mechanics (what actually changed).**
+
+- **Dedup key.** `_build_annotations` now dedups on `(variant_key, conclusion, negatives)` — one row
+  per genuine variant-effect pair (first occurrence wins). The `A/T` and `T/T` effects survive as two
+  rows; a truly identical repeat still collapses.
+- **Self-joinable table.** `annotations.parquet` now *carries* `conclusion` and `negatives` (alongside
+  `variant_key`), so the table can be rejoined to `weights.parquet` on the exact pair. `weights` already
+  carries `variant_key`/`conclusion`/`negatives` per row, so no new `weights` column is needed.
+- **Reverse probes the same key.** `reverse_module` rebuilds each variant row's `(variant_key,
+  conclusion, negatives)` triple from its `weights` row and looks up *its own* annotation — so `T/T`
+  gets `Sickle-cell disease`/`hematologic` back, not `A/T`'s. An older artifact whose `annotations`
+  lacks a `conclusion` column falls back to the legacy `variant_key`-only probe (backward-compatible
+  read).
+- **Digest.** `artifact.digest` moves **once** because `annotations.parquet` gained two columns —
+  free while 0.4 is unpublished (Principle 4); determinism + round-trip are the held invariants.
+
+**Charter check:** data-agnostic ✓ (still pure annotation — no measurement; the sample's genotype is
+supplied by the consumer at query time); declarative ✓; P5 — this *unbundles* an overloaded identity
+(variant ≠ variant-effect); P7 — the whole point is restoring lossless round-trip, proven by
+`test_poly_effect_annotation_survives_roundtrip` (both effects survive **and** the digest is a fixed
+point). Human-authorability gate ✓: the author writes plain genotype→conclusion rows and never sees the
+key; the machinery is entirely compiler-side. See [`COMPILER.md`](COMPILER.md) §"Intentionally
+unimplemented" item 5 (the `reverse_module` boundary) and the SNV example in
+[`REFERENCE_EXAMPLES.md`](REFERENCE_EXAMPLES.md) §1.
+
+---
+
 ## Roadmap items surfaced
 
 The gaps above, consolidated. Format-side items migrate into [`ROADMAP.md`](ROADMAP.md); the

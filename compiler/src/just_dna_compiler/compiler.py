@@ -24,6 +24,7 @@ from typing import Any, Callable, Optional, Union, get_args, get_origin
 
 import polars as pl
 import yaml
+from just_dna_format.base import derive_variant_key
 from just_dna_format.integrity import build_artifact, file_entries, file_entry, sha256_file
 from just_dna_format.manifest import (
     LOGO_EXTENSIONS,
@@ -92,7 +93,9 @@ _TABLE_KIND_CSVS: tuple[str, ...] = tuple(csv for csv, _, _ in _TABLE_KINDS)
 # `PgsRow`/`DiplotypeRow`/`PharmVariantRow` key includes `trait_efo_id`/`drug` so a legitimately
 # pleiotropic or multi-drug row is not a false duplicate.
 _TABLE_DUPE_KEYS: dict[type[BaseModel], Callable[[Any], tuple]] = {
-    HaplotypeRow: lambda r: (r.haplotype_name, r.rsid or f"{r.chrom}:{r.start}:{r.ref}", r.allele),
+    HaplotypeRow: lambda r: (
+        r.haplotype_name, derive_variant_key(r.rsid, r.chrom, r.start, r.ref), r.allele,
+    ),
     AlleleFunctionRow: lambda r: (r.gene, r.allele),
     DiplotypeRow: lambda r: (r.gene, r.haplotype_a, r.haplotype_b, r.trait_efo_id, r.drug),
     PgsRow: lambda r: (r.pgs_id, r.trait_efo_id),
@@ -163,36 +166,46 @@ def _build_table(rows: list[Any], model: type[BaseModel], module_name: str) -> p
     return pl.DataFrame(records, schema=schema)
 
 
-def _bool_cell(value: Optional[bool]) -> str:
-    """Render a tri-state Optional[bool] to a CSV cell: True→'true', False→'false', None→''."""
-    return "" if value is None else ("true" if value else "false")
+def _scalar_cell(value: Any) -> str:
+    """Render a scalar parquet value to a CSV cell — the shared cell logic every reverse writer uses:
+
+    - ``None`` → ``""`` (absent);
+    - ``bool`` → ``"true"``/``"false"`` (tri-state fidelity — an authored ``False`` survives distinct
+      from an unset ``None``);
+    - an **integer-valued float** → a bare int (a copy number / repeat count stored as a float
+      `measure_min/max`, or an integer weight, renders as ``40`` not ``40.0``, keeping the reversed
+      CSV human-authorable — value-preserving, ``"40"`` reloads to ``40.0``);
+    - everything else → ``str(value)``.
+
+    (`bool` is checked before the float branch because `bool` is an `int`, not a `float`.)"""
+    if value is None:
+        return ""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return str(value)
+
+
+def _list_cell(value: Optional[list]) -> str:
+    """Render a list column to a pipe-joined CSV cell (empty/None → "")."""
+    return "|".join(value) if value else ""
 
 
 def _write_table_csv(df: pl.DataFrame, model: type[BaseModel], path: Path) -> None:
     """Reverse of `_build_table`: parquet → the authored CSV. Drops the injected `module` column
-    (not authored); renders None→"", list→pipe-joined, bool→"true"/"false" (tri-state fidelity)."""
+    (not authored); renders each cell via `_scalar_cell`/`_list_cell` (None→"", list→pipe-joined,
+    bool→"true"/"false", integer-valued float→bare int)."""
     fieldnames = list(model.model_fields.keys())
     list_fields = _list_fields(model)
     with open(path, "w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=fieldnames)
         writer.writeheader()
         for row in df.iter_rows(named=True):
-            out: dict[str, str] = {}
-            for name in fieldnames:
-                value = row.get(name)
-                if value is None:
-                    out[name] = ""
-                elif name in list_fields:
-                    out[name] = "|".join(value) if value else ""
-                elif isinstance(value, bool):
-                    out[name] = "true" if value else "false"
-                elif isinstance(value, float) and value.is_integer():
-                    # An integer-valued count (copy number, repeat count) is stored as a float
-                    # `measure_min/max` but renders back as a bare int, keeping the reversed CSV
-                    # human-authorable (40, not 40.0). Value-preserving: "40" reloads to 40.0.
-                    out[name] = str(int(value))
-                else:
-                    out[name] = str(value)
+            out = {
+                name: (_list_cell(row.get(name)) if name in list_fields else _scalar_cell(row.get(name)))
+                for name in fieldnames
+            }
             writer.writerow(out)
 
 
@@ -430,12 +443,15 @@ def _cross_validate_studies(
     warnings: list[str] = []
     variant_rsids = {v.rsid for v in variants if v.rsid is not None}
     variant_coords = {
-        f"{v.chrom}:{v.start}:{v.ref}" for v in variants if v.chrom is not None
+        derive_variant_key(None, v.chrom, v.start, v.ref) for v in variants if v.chrom is not None
     }
     orphans: list[str] = []
     for row in studies:
         by_rsid = row.rsid is not None and row.rsid in variant_rsids
-        by_coord = row.chrom is not None and f"{row.chrom}:{row.start}:{row.ref}" in variant_coords
+        by_coord = (
+            row.chrom is not None
+            and derive_variant_key(None, row.chrom, row.start, row.ref) in variant_coords
+        )
         if not by_rsid and not by_coord:
             orphans.append(row.variant_key)
     if orphans:
@@ -929,21 +945,31 @@ def _build_weights(variants: list[VariantRow], config: ModuleSpecConfig) -> pl.D
 
 
 def _build_annotations(variants: list[VariantRow], module_name: str) -> pl.DataFrame:
-    """Build annotations.parquet, deduplicated by variant_key (first occurrence wins).
+    """Build annotations.parquet, deduplicated by the genuine **variant-effect pair**
+    `(variant_key, conclusion, negatives)` (first occurrence wins).
 
-    Carries an explicit `variant_key` column (rsid, else `chrom:start:ref`) so a **position-only**
-    variant's gene/phenotype/category survive the reverse round-trip. Keying the reverse lookup on
-    `rsid` alone dropped them, because rsid is null for a position-only row and every such row
-    collapsed onto one null key (Principle 7 round-trip fidelity)."""
-    seen_keys: set[str] = set()
+    Keying on `variant_key` alone collapsed a genuine *poly-effect* variant — the same locus
+    carrying two distinct annotations (different `conclusion`/`category`, as embryo-level / neural
+    findings routinely do when `category` does not subsume the effect) — onto its first row, so the
+    second row's `gene`/`phenotype`/`category` were silently overwritten on reverse (a Principle 7
+    round-trip loss introduced with the `variant_key` column). The effect (`conclusion` + `negatives`)
+    is part of the identity, so a row per (variant, effect) is kept.
+
+    Carries `variant_key`/`conclusion`/`negatives` so the table is **self-joinable** back to
+    `weights.parquet` on reverse (each weights row rebuilds the same triple), and an explicit
+    `variant_key` (rsid, else `chrom:start:ref`) so a **position-only** variant's annotation survives
+    (rsid is null for such a row)."""
+    seen_keys: set[tuple[str, Optional[str], Optional[str]]] = set()
     records: list[dict[str, Optional[str]]] = []
     for v in variants:
-        key = v.variant_key
+        key = (v.variant_key, v.conclusion, v.negatives)
         if key not in seen_keys:
             records.append(
                 {
                     "rsid": v.rsid,
-                    "variant_key": key,
+                    "variant_key": v.variant_key,
+                    "conclusion": v.conclusion,
+                    "negatives": v.negatives,
                     "module": module_name,
                     "gene": v.gene or "",
                     "phenotype": v.phenotype or "",
@@ -954,6 +980,8 @@ def _build_annotations(variants: list[VariantRow], module_name: str) -> pl.DataF
     schema = {
         "rsid": pl.Utf8,
         "variant_key": pl.Utf8,
+        "conclusion": pl.Utf8,
+        "negatives": pl.Utf8,
         "module": pl.Utf8,
         "gene": pl.Utf8,
         "phenotype": pl.Utf8,
@@ -1091,22 +1119,34 @@ def reverse_module(
 
     # variants.csv + studies.csv only when the module has them.
     if weights_df is not None:
-        ann_lookup: dict[str, dict[str, str]] = {}
+        ann_lookup: dict[tuple, dict[str, str]] = {}
+        ann_keyed_by_effect = False
         ann_path = parquet_dir / "annotations.parquet"
         if ann_path.exists():
-            for row in pl.read_parquet(ann_path).iter_rows(named=True):
-                # Key by variant_key so position-only variants (rsid null) match; fall back to rsid
-                # for an older artifact compiled before the variant_key column existed.
-                key = row.get("variant_key") or row.get("rsid")
-                if key is not None:
-                    ann_lookup[key] = {
-                        "gene": row.get("gene", ""),
-                        "phenotype": row.get("phenotype", ""),
-                        "category": row.get("category", ""),
-                    }
+            ann_df = pl.read_parquet(ann_path)
+            # An artifact whose annotations carry `conclusion` is keyed on the variant-effect pair;
+            # an older one (pre-effect-key) is keyed on variant_key alone. Detect once and key both
+            # the lookup and the weights-side probe the same way.
+            ann_keyed_by_effect = "conclusion" in ann_df.columns
+            for row in ann_df.iter_rows(named=True):
+                # variant_key so position-only variants (rsid null) match; fall back to rsid for an
+                # older artifact compiled before the variant_key column existed.
+                base = row.get("variant_key") or row.get("rsid")
+                if base is None:
+                    continue
+                key = (
+                    (base, row.get("conclusion"), row.get("negatives"))
+                    if ann_keyed_by_effect
+                    else (base,)
+                )
+                ann_lookup[key] = {
+                    "gene": row.get("gene", ""),
+                    "phenotype": row.get("phenotype", ""),
+                    "category": row.get("category", ""),
+                }
         _write_variants_csv(
-            weights_df, ann_lookup, default_curator, default_method, default_priority,
-            output_dir / "variants.csv",
+            weights_df, ann_lookup, ann_keyed_by_effect, default_curator, default_method,
+            default_priority, output_dir / "variants.csv",
         )
     studies_path = parquet_dir / "studies.parquet"
     if studies_path.exists():
@@ -1138,7 +1178,8 @@ def _most_common(df: pl.DataFrame, col: str) -> Optional[str]:
 
 def _write_variants_csv(
     weights_df: pl.DataFrame,
-    ann_lookup: dict[str, dict[str, str]],
+    ann_lookup: dict[tuple, dict[str, str]],
+    ann_keyed_by_effect: bool,
     default_curator: str,
     default_method: str,
     default_priority: Optional[str],
@@ -1168,19 +1209,24 @@ def _write_variants_csv(
             if variant_key is None:
                 # Old artifact without the frozen-key column: fall back to the derived key + prior
                 # (non-restoring) behavior, emitting whatever rsid is present.
-                variant_key = raw_rsid or f"{row.get('chrom')}:{row.get('start')}:{row.get('ref')}"
+                variant_key = derive_variant_key(
+                    raw_rsid, row.get("chrom"), row.get("start"), row.get("ref")
+                )
                 emit_rsid = raw_rsid or ""
             else:
                 emit_rsid = raw_rsid if (raw_rsid is not None and variant_key == raw_rsid) else ""
-            ann = ann_lookup.get(variant_key, {})
+            # Probe the annotation on the same key the table was built with: the variant-effect pair
+            # (variant_key, conclusion, negatives) when the artifact carries it, else variant_key.
+            ann_key = (
+                (variant_key, row.get("conclusion"), row.get("negatives"))
+                if ann_keyed_by_effect
+                else (variant_key,)
+            )
+            ann = ann_lookup.get(ann_key, {})
             genotype_list = row.get("genotype", [])
-            alts_list = row.get("alts")
             curator = row.get("curator", "")
             method = row.get("method", "")
             priority = row.get("priority")
-            clinvar = row.get("clinvar")
-            pathogenic = row.get("pathogenic")
-            benign = row.get("benign")
             # Reconstruct the genotype string. The `phased` bit (materialized alongside the allele
             # list) tells us which separator to re-emit: a phased pair keeps its order and joins with
             # '|'; an unphased pair is re-emitted alphabetically sorted with '/'; a single allele
@@ -1192,42 +1238,43 @@ def _write_variants_csv(
                     genotype_str = "/".join(sorted(genotype_list))
             else:
                 genotype_str = "/".join(genotype_list) if genotype_list else ""
-            flags_list = row.get("flags")
-            effect_size = row.get("effect_size")
+            alts_list = row.get("alts")
             writer.writerow(
                 {
                     "rsid": emit_rsid,
-                    "chrom": row.get("chrom", ""),
-                    "start": row.get("start", ""),
-                    "ref": row.get("ref", ""),
+                    "chrom": _scalar_cell(row.get("chrom")),
+                    "start": _scalar_cell(row.get("start")),
+                    "ref": _scalar_cell(row.get("ref")),
                     "alts": ",".join(alts_list) if alts_list else "",
                     "genotype": genotype_str,
-                    "weight": row.get("weight") if row.get("weight") is not None else "",
-                    "state": row.get("state", ""),
-                    "conclusion": row.get("conclusion", ""),
-                    "negatives": row.get("negatives") or "",
+                    "weight": _scalar_cell(row.get("weight")),
+                    "state": _scalar_cell(row.get("state")),
+                    "conclusion": _scalar_cell(row.get("conclusion")),
+                    "negatives": _scalar_cell(row.get("negatives")),
+                    # priority/curator/method: blank when equal to the inferred default (so a
+                    # recompile re-applies the default), else the explicit value.
                     "priority": priority if priority != default_priority else "",
                     "gene": ann.get("gene", ""),
                     "phenotype": ann.get("phenotype", ""),
                     "category": ann.get("category", ""),
                     # Tri-state (True/False/None → true/false/empty), so an authored False survives.
-                    "clinvar": _bool_cell(clinvar),
-                    "pathogenic": _bool_cell(pathogenic),
-                    "benign": _bool_cell(benign),
+                    "clinvar": _scalar_cell(row.get("clinvar")),
+                    "pathogenic": _scalar_cell(row.get("pathogenic")),
+                    "benign": _scalar_cell(row.get("benign")),
                     "curator": curator if curator != default_curator else "",
                     "method": method if method != default_method else "",
-                    "direction": row.get("direction") or "",
-                    "stat_significance": row.get("stat_significance") or "",
-                    "effect_size": effect_size if effect_size is not None else "",
-                    "effect_measure": row.get("effect_measure") or "",
-                    "effect_allele": row.get("effect_allele") or "",
-                    "flags": "|".join(flags_list) if flags_list else "",
-                    "trait_efo_id": row.get("trait_efo_id") or "",
-                    "clin_sig": row.get("clin_sig") or "",
+                    "direction": _scalar_cell(row.get("direction")),
+                    "stat_significance": _scalar_cell(row.get("stat_significance")),
+                    "effect_size": _scalar_cell(row.get("effect_size")),
+                    "effect_measure": _scalar_cell(row.get("effect_measure")),
+                    "effect_allele": _scalar_cell(row.get("effect_allele")),
+                    "flags": _list_cell(row.get("flags")),
+                    "trait_efo_id": _scalar_cell(row.get("trait_efo_id")),
+                    "clin_sig": _scalar_cell(row.get("clin_sig")),
                     # 0.4 axes: Optional bools are tri-state (True/False/None → true/false/empty).
-                    "requires_callable": _bool_cell(row.get("requires_callable")),
-                    "acmg_sf": _bool_cell(row.get("acmg_sf")),
-                    "actionability": row.get("actionability") or "",
+                    "requires_callable": _scalar_cell(row.get("requires_callable")),
+                    "acmg_sf": _scalar_cell(row.get("acmg_sf")),
+                    "actionability": _scalar_cell(row.get("actionability")),
                 }
             )
 
@@ -1249,26 +1296,24 @@ def _write_studies_csv(studies_df: pl.DataFrame, output_path: Path) -> None:
             pmid = row.get("pmid")
             if pmid is None or str(pmid).strip() == "":
                 continue
-            effect_size = row.get("effect_size")
-            start = row.get("start")
             writer.writerow(
                 {
-                    "rsid": row.get("rsid") or "",
+                    "rsid": _scalar_cell(row.get("rsid")),
                     # Position columns so a position-only study row (rsid null) keeps an identifier.
-                    "chrom": row.get("chrom") or "",
-                    "start": start if start is not None else "",
-                    "ref": row.get("ref") or "",
+                    "chrom": _scalar_cell(row.get("chrom")),
+                    "start": _scalar_cell(row.get("start")),
+                    "ref": _scalar_cell(row.get("ref")),
                     "pmid": str(pmid).strip(),
-                    "population": row.get("population") or "",
-                    "p_value": row.get("p_value") or "",
-                    "conclusion": row.get("conclusion") or "",
-                    "study_design": row.get("study_design") or "",
-                    "stat_significance": row.get("stat_significance") or "",
-                    "effect_size": effect_size if effect_size is not None else "",
-                    "effect_measure": row.get("effect_measure") or "",
-                    "trait_efo_id": row.get("trait_efo_id") or "",
-                    "doi": row.get("doi") or "",
-                    "provenance_quote": row.get("provenance_quote") or "",
-                    "provenance_regex": row.get("provenance_regex") or "",
+                    "population": _scalar_cell(row.get("population")),
+                    "p_value": _scalar_cell(row.get("p_value")),
+                    "conclusion": _scalar_cell(row.get("conclusion")),
+                    "study_design": _scalar_cell(row.get("study_design")),
+                    "stat_significance": _scalar_cell(row.get("stat_significance")),
+                    "effect_size": _scalar_cell(row.get("effect_size")),
+                    "effect_measure": _scalar_cell(row.get("effect_measure")),
+                    "trait_efo_id": _scalar_cell(row.get("trait_efo_id")),
+                    "doi": _scalar_cell(row.get("doi")),
+                    "provenance_quote": _scalar_cell(row.get("provenance_quote")),
+                    "provenance_regex": _scalar_cell(row.get("provenance_regex")),
                 }
             )

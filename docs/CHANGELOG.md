@@ -45,6 +45,30 @@ one-to-many rsid had no faithful representation), silently breaking round-trip/i
   determinism + consistency + build-skip, compile→reverse→recompile flip-prevention + expansion
   idempotency, old-artifact fallback, orphan-on-coord, malformed-provenance).
 
+## 2026-07-15 — 0.4.0 (unpublished) — audit pass: poly-effect round-trip + reverse-writer dedup
+
+A third correctness/tidiness pass over the 0.4 branch (still unpublished, so the `annotations.parquet`
+schema move is free). Each fix ships with a regression test.
+
+- **Poly-effect annotation no longer lost on round-trip (Principle 7).** `annotations.parquet` was
+  deduplicated by `variant_key` alone, so a genuine poly-effect variant — one locus, two genotype rows
+  with distinct `conclusion` **and** distinct `gene`/`phenotype`/`category` (as embryo-level / neural
+  findings routinely are when `category` does not subsume the effect) — collapsed onto its first row,
+  silently overwriting the second row's annotation on `reverse_module`. This was introduced with the
+  `variant_key` column. The genuine identity is the **variant-effect pair**, so annotations now dedups
+  on `(variant_key, conclusion, negatives)` and carries `conclusion`/`negatives` so the table is
+  self-joinable back to `weights.parquet`; reverse probes the same key. `artifact.digest` moves once
+  (annotations gained two columns) — expected while unpublished; determinism + round-trip are held.
+- **Coord-key format de-inlined to one source.** `chrom:start:ref` was hand-built in ~8 spots across
+  the compiler and resolver despite `base.derive_variant_key` being the documented single source of
+  truth; all now call the helper (the literal format lives only in `base.py`).
+- **Reverse writers share one cell formatter.** The None→""/tri-state-bool/integer-float/list-join
+  cell logic was implemented four ways (`_write_table_csv`, `_bool_cell`, and per-field ternaries in
+  the variants/studies writers); consolidated into `_scalar_cell`/`_list_cell` used by all three.
+- **Doc:** `reverse_module`'s manifest-only-metadata boundary (it reconstructs the compilable core
+  from parquets; `genome_build`/`authorship`/`panel`/`provenance`/`logo` are not restored) is now
+  stated explicitly as known/expected in COMPILER.md.
+
 ## 2026-07-15 — 0.4.0 (unpublished) — branch-review fixes
 
 A second correctness/consistency pass over the 0.4 branch before publish (still unpublished, so all

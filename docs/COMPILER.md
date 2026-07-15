@@ -63,6 +63,21 @@ form of those.
    loci is **expanded to one row per locus** (a paralog/SV signal a client can count — data-agnostic);
    this ships GRCh38-now as compiler behavior. Only *which/how-many* loci per build is build-specific,
    so the multi-build generalization is RM15 — the GRCh38 expansion itself is not deferred.
+5. **`reverse_module` reconstructs the compilable core, not manifest-only metadata.** Reverse reads
+   the **parquet artifact only** — it never opens `manifest.json`. So fields that live only in the
+   manifest and are **out of `artifact.digest`** are not restored to the reversed `module_spec.yaml`:
+   `authorship`, `panel`, `provenance`, `logo`, and the flat `curator`/`method` defaults are re-derived
+   from the parquets (curator/method) or dropped (authorship/panel/provenance/logo). In particular
+   **`genome_build` is emitted as `GRCh38`** regardless of the original — a GRCh37/T2T label is a
+   manifest fact the artifact does not carry, and such a build is not honored anyway (see 4). This is
+   **known and expected**: the digest fixed point holds (these fields are out of the digest, so
+   compile → reverse → compile is byte-stable), and round-trip fidelity (Principle 7) is defined over
+   the digest-bearing artifact, not over manifest-only metadata. A consumer that needs the metadata
+   reads it from `manifest.json`, which is preserved verbatim by the forward compile. What *is*
+   round-trip-critical — every authored `VariantRow`/`StudyRow`/table-kind value, including a genuine
+   **poly-effect** variant's per-effect `gene`/`phenotype`/`category` (annotations are keyed on the
+   variant-effect pair `(variant_key, conclusion, negatives)`, not `variant_key` alone) — *is*
+   restored.
 
 ## 0.4 compiler coverage (materialized)
 
