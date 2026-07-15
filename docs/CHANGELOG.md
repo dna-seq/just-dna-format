@@ -5,10 +5,29 @@ Shared change log for the just-dna module format/compiler ecosystem. Because
 **just-dna-marketplace**, and **just-dna-agents**, cross-repo integration changes are recorded
 here so parallel work in the other repos isn't surprised. Newest first.
 
-## 2026-07-15 — 0.4.0 (unpublished) — frozen variant identity + one-to-many rsid expansion
+## 2026-07-15 — 0.4.0 (released) — audit pass: input-hardening tidy-ups
+
+A fourth audit pass over the 0.4 branch. A full read confirmed the invariants hold (round-trip/
+idempotency proven empirically across the frozen-key, expansion, and 0.4 generic-table paths); two
+input-validation gaps remained, both fixed with regression tests. (The previously-suspected residual
+poly-effect annotation loss was re-examined and found **non-real** — same `variant_key` implies one
+locus implies one gene, and identical `conclusion`+`negatives` implies the same effect, so no
+sensible case can differ in `gene`/`phenotype`/`category`; the genuine loss was already closed by the
+variant-effect-pair keying below.)
+
+- **Ragged CSV rows no longer slip past `extra="forbid"`.** A data row with more cells than the header
+  had its surplus bucketed under `csv.DictReader`'s `None` key and silently dropped, so a shifted or
+  extra column read as valid instead of being rejected like a typo'd header. `_load_csv_rows` now
+  fails such a row with a line-located diagnosis (a typo'd *header* was already caught).
+- **Namespace slug rule tightened.** `NAMESPACE_PATTERN` rejected a leading hyphen but accepted a
+  trailing (`just-dna-`) or doubled (`a--b`) one; it now requires hyphens to *separate* alphanumeric
+  segments (`^[a-z0-9]+(-[a-z0-9]+)*$`). No real namespace used those forms, so nothing valid is
+  invalidated. **Tests +3.**
+
+## 2026-07-15 — 0.4.0 (released) — frozen variant identity + one-to-many rsid expansion
 
 A follow-up correctness pass on the 0.4 branch, resolving an identity-model flaw the branch review
-surfaced (still unpublished, so the `artifact.digest` move is free). Root cause: `variant_key =
+surfaced (unpublished at the time, so the `artifact.digest` move was free). Root cause: `variant_key =
 rsid-else-coord` treated an rsid and a coordinate as interchangeable identities, so the Ensembl
 resolver — an enrichment — *mutated identity* (filling a coord→rsid flipped the derived key; a
 one-to-many rsid had no faithful representation), silently breaking round-trip/idempotency
@@ -45,9 +64,9 @@ one-to-many rsid had no faithful representation), silently breaking round-trip/i
   determinism + consistency + build-skip, compile→reverse→recompile flip-prevention + expansion
   idempotency, old-artifact fallback, orphan-on-coord, malformed-provenance).
 
-## 2026-07-15 — 0.4.0 (unpublished) — audit pass: poly-effect round-trip + reverse-writer dedup
+## 2026-07-15 — 0.4.0 (released) — audit pass: poly-effect round-trip + reverse-writer dedup
 
-A third correctness/tidiness pass over the 0.4 branch (still unpublished, so the `annotations.parquet`
+A third correctness/tidiness pass over the 0.4 branch (unpublished at the time, so the `annotations.parquet`
 schema move is free). Each fix ships with a regression test.
 
 - **Poly-effect annotation no longer lost on round-trip (Principle 7).** `annotations.parquet` was
@@ -58,7 +77,7 @@ schema move is free). Each fix ships with a regression test.
   `variant_key` column. The genuine identity is the **variant-effect pair**, so annotations now dedups
   on `(variant_key, conclusion, negatives)` and carries `conclusion`/`negatives` so the table is
   self-joinable back to `weights.parquet`; reverse probes the same key. `artifact.digest` moves once
-  (annotations gained two columns) — expected while unpublished; determinism + round-trip are held.
+  (annotations gained two columns) — expected while it was still pre-release; determinism + round-trip are held.
 - **Coord-key format de-inlined to one source.** `chrom:start:ref` was hand-built in ~8 spots across
   the compiler and resolver despite `base.derive_variant_key` being the documented single source of
   truth; all now call the helper (the literal format lives only in `base.py`).
@@ -69,9 +88,9 @@ schema move is free). Each fix ships with a regression test.
   from parquets; `genome_build`/`authorship`/`panel`/`provenance`/`logo` are not restored) is now
   stated explicitly as known/expected in COMPILER.md.
 
-## 2026-07-15 — 0.4.0 (unpublished) — branch-review fixes
+## 2026-07-15 — 0.4.0 (released) — branch-review fixes
 
-A second correctness/consistency pass over the 0.4 branch before publish (still unpublished, so all
+A second correctness/consistency pass over the 0.4 branch before publish (unpublished at the time, so all
 of the below is free to absorb). Each fix ships with a regression test.
 
 - **PGx diplotypes with multiple drug annotations now compile.** The per-table duplicate-row key for
@@ -123,11 +142,11 @@ of the below is free to absorb). Each fix ships with a regression test.
   longer describes its shipped ✅ rows as "still open"; `just-dna-agents` is listed among related repos
   in CLAUDE.md; and the RM11/RM12 provenance-column comments read "0.4 (from the 0.5 scope)".
 
-## 2026-07-11 — 0.4.0 (unpublished) — round-trip hardening + audit fixes
+## 2026-07-11 — 0.4.0 (released) — round-trip hardening + audit fixes
 
 A correctness/robustness pass over the 0.4 work, before publish. Packages bumped **0.3.0 → 0.4.0**
 (the `just-dna-format` / `just-dna-compiler` versions now match the milestone the code already
-implements). **`schema_version` stays `"1.0"`.** Still unpublished, so the `artifact.digest` changes
+implements). **`schema_version` stays `"1.0"`.** Unpublished at the time, so the `artifact.digest` changes
 below are free to absorb.
 
 - **Structured per-version authorship (RM14; docs/USE_CASES.md §5a).** A new optional
@@ -253,7 +272,7 @@ every 0.1/0.2 module keeps validating; all new columns are optional. Design capt
   (diplotype/copy-number/PGx star-alleles) remain out of scope.
 - **Digest note:** the parquet schema now carries the 0.3 columns + the `phased` bit, so a re-compile
   changes `artifact.digest` for every module (expected on a compiler-version bump; reproducibility
-  pinned by `compiler_version`; 0.3 is unpublished, so the change is still free to absorb).
+  pinned by `compiler_version`; 0.3 was unpublished at the time, so the change was still free to absorb).
 - **Docs:** new root `CLAUDE.md` makes `docs/CONSTITUTION.md` the mandatory first read (discoverability
   gap — the charter was only linked from README/ROADMAP, with no agent entry-point). CONSTITUTION gains
   Principle 7 (round-trip/idempotency) and Principle 8 (requiredness compatibility).

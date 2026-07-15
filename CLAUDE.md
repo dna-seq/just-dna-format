@@ -101,6 +101,22 @@ cycle* in `USE_CASES.md`.
   demoted; anything that changes `artifact.digest` bytes (parquet column set/types) is major-only —
   *except* while a version is still unpublished, where the digest is not yet frozen.
 - **Round-trip must stay lossless and idempotent** (Principle 7) — prove it with tests, don't assume.
+- **Dogfood a P7/dedup finding before you report it — construct a *real, sensible* example against
+  the actual code paths, or it is not a finding.** A round-trip/dedup "loss" that is mechanically
+  possible but has no real instantiation is noise; walk the data model with a biologist's eye before
+  flagging it. The standing example: `annotations.parquet` dedups on the **variant-effect pair**
+  `(variant_key, conclusion, negatives)`. An audit flagged "two rows sharing that key + identical
+  `conclusion`/`negatives` but differing `gene`/`phenotype`/`category` collapse to the first — a P7
+  loss." It read airtight mechanically, yet it is **non-real**, and trying to build one example proves
+  why: sharing a `variant_key` forces a *single locus* (a one-to-many rsid is **expanded to distinct
+  coord-keys** by the resolver, so paralogs never share a key) ⟹ one `gene`; and identical
+  `conclusion`+`negatives` means the *same effect* ⟹ the same `phenotype`/`category`. `gene` isn't
+  even carried in `weights.parquet`, so two such rows are physically indistinguishable regardless of
+  keying. The constraint set is empty — no real, sensible module hits it. The **genuine** poly-effect
+  loss (one locus, two genotypes, *distinct* conclusions — het "carrier" vs hom "affected") is what
+  the variant-effect-pair keying already fixed. Lesson: empirical probing + a real-example test beat a
+  plausible-looking mechanistic claim; the mechanistic claim, unfalsified, was a mechanical re-flag of
+  an already-closed item.
 - **Deterministic ordering is load-bearing** (an implicit consequence of Principle 7, not its own
   charter rule). Parquet bytes depend on **row order**, so `artifact.digest` is order-sensitive:
   **authored row order is preserved** through compile → reverse → recompile and must stay that way.
