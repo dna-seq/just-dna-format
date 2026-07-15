@@ -5,6 +5,25 @@ Shared change log for the just-dna module format/compiler ecosystem. Because
 **just-dna-marketplace**, and **just-dna-agents**, cross-repo integration changes are recorded
 here so parallel work in the other repos isn't surprised. Newest first.
 
+## 2026-07-15 — 0.4.0 (unpublished) — audit pass: input-hardening tidy-ups
+
+A fourth audit pass over the 0.4 branch. A full read confirmed the invariants hold (round-trip/
+idempotency proven empirically across the frozen-key, expansion, and 0.4 generic-table paths); two
+input-validation gaps remained, both fixed with regression tests. (The previously-suspected residual
+poly-effect annotation loss was re-examined and found **non-real** — same `variant_key` implies one
+locus implies one gene, and identical `conclusion`+`negatives` implies the same effect, so no
+sensible case can differ in `gene`/`phenotype`/`category`; the genuine loss was already closed by the
+variant-effect-pair keying below.)
+
+- **Ragged CSV rows no longer slip past `extra="forbid"`.** A data row with more cells than the header
+  had its surplus bucketed under `csv.DictReader`'s `None` key and silently dropped, so a shifted or
+  extra column read as valid instead of being rejected like a typo'd header. `_load_csv_rows` now
+  fails such a row with a line-located diagnosis (a typo'd *header* was already caught).
+- **Namespace slug rule tightened.** `NAMESPACE_PATTERN` rejected a leading hyphen but accepted a
+  trailing (`just-dna-`) or doubled (`a--b`) one; it now requires hyphens to *separate* alphanumeric
+  segments (`^[a-z0-9]+(-[a-z0-9]+)*$`). No real namespace used those forms, so nothing valid is
+  invalidated. **Tests +3.**
+
 ## 2026-07-15 — 0.4.0 (unpublished) — frozen variant identity + one-to-many rsid expansion
 
 A follow-up correctness pass on the 0.4 branch, resolving an identity-model flaw the branch review

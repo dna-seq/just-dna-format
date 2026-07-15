@@ -67,6 +67,24 @@ def test_validate_spec_requires_studies(tmp_path: Path) -> None:
     assert any("studies.csv is missing" in e for e in result.errors)
 
 
+def test_ragged_row_with_surplus_cell_is_an_error(tmp_path: Path) -> None:
+    # A data row with more cells than the header would otherwise have its surplus bucketed under
+    # DictReader's `None` key and silently dropped — a shifted/extra column slipping past
+    # extra="forbid". It must fail validation with a line-located diagnosis instead.
+    (tmp_path / "module_spec.yaml").write_text(_MODULE_YAML, encoding="utf-8")
+    (tmp_path / "studies.csv").write_text(_STUDIES_CSV, encoding="utf-8")
+    (tmp_path / "variants.csv").write_text(
+        "rsid,genotype,state,conclusion\n"
+        "rs1801133,A/G,protective,ok,SURPLUS_SHIFTED_VALUE\n",
+        encoding="utf-8",
+    )
+    result = validate_spec(tmp_path)
+    assert not result.valid
+    assert any(
+        "more values than header columns" in e and "line 2" in e for e in result.errors
+    ), result.errors
+
+
 def test_compile_emits_parquets_and_manifest(spec_dir: Path, tmp_path: Path) -> None:
     out = tmp_path / "out"
     result = compile_module(spec_dir, out, resolve_with_ensembl=False)

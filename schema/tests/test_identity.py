@@ -37,7 +37,14 @@ def test_validate_name_raises_on_bad() -> None:
 
 @pytest.mark.parametrize(
     "ns,valid",
-    [("just-dna-seq", True), ("antonkulaga", True), ("With_Underscore", False), ("-lead", False)],
+    [
+        ("just-dna-seq", True),
+        ("antonkulaga", True),
+        ("With_Underscore", False),
+        ("-lead", False),
+        ("trail-", False),  # hyphens separate segments — no trailing empty part
+        ("a--b", False),    # no doubled hyphen (no empty interior segment)
+    ],
 )
 def test_namespace_rule(ns: str, valid: bool) -> None:
     assert is_valid_namespace(ns) is valid

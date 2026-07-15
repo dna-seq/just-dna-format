@@ -352,6 +352,16 @@ def _load_csv_rows(
         if reader.fieldnames is None:
             return [], [f"{file_label} has no header row"], []
         for line_num, raw_row in enumerate(reader, start=2):
+            # DictReader buckets any cells past the header under the `None` key (a list). Silently
+            # dropping them would let a shifted/surplus column slip past `extra="forbid"` — a real
+            # authoring error (a misaligned row) reported as valid. Flag a non-empty surplus instead.
+            surplus = [s for s in (raw_row.get(None) or []) if isinstance(s, str) and s.strip()]
+            if surplus:
+                errors.append(
+                    f"{file_label} line {line_num}: more values than header columns "
+                    f"(surplus: {surplus}) — check for a shifted or extra column"
+                )
+                continue
             cleaned = {
                 k.strip(): (v.strip() if isinstance(v, str) and v.strip() != "" else None)
                 for k, v in raw_row.items()
